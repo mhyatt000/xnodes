@@ -1,7 +1,11 @@
-"""ROS2 AprilTag node."""
-
 from __future__ import annotations
+from geometry_msgs.msg import Point
+from std_msgs.msg import Header
+from visualization_msgs.msg import Marker, MarkerArray
+from std_msgs.msg import ColorRGBA
+import tyro
 
+import os.path as osp
 from dataclasses import dataclass
 from typing import Optional
 
@@ -13,11 +17,8 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import CameraInfo, Image
-
-try:
-    from cv_bridge import CvBridge
-except ImportError as exc:  # pragma: no cover - ROS env should provide cv_bridge
-    raise RuntimeError("cv_bridge is required for AprilTagNode") from exc
+from cv_bridge import CvBridge
+from rich import print
 
 
 R_OPT2CAMLINK = np.array([[0.0, 0.0, 1.0],
@@ -90,17 +91,31 @@ class AprilTagDetection:
     T_tag_camlink: Optional[np.ndarray] = None
 
 
+@dataclass
+class AprilConfig:
+    topic: str # base topic for camera info and images ie: /video0
+    tag_id: int = 0
+    tag_size: float = 9.0  # in inches
+    family: str = "DICT_APRILTAG_36h11"
+
+    refine_corners: bool = True
+    to_camlink: bool = False
+    camera_frame: str = "camera_optical"
+
+    @property
+    def tag_size_m(self) -> None:
+        """Convert tag_size from inches to meters."""
+        return self.tag_size * 0.0254
+
 class AprilTagDetector:
     """Detect AprilTags from images."""
 
-    def __init__(self, *, family: str, tag_size: float, refine_corners: bool, to_camlink: bool) -> None:
-        self.family = family
-        self.tag_size = tag_size
-        self.refine_corners = refine_corners
-        self.to_camlink = to_camlink
+    def __init__(self, cfg:AprilConfig):
+        self.cfg = cfg
+
         self.K: Optional[np.ndarray] = None
         self.dist: Optional[np.ndarray] = None
-        self._detector = self._build_detector(family)
+        self._detector = self._build_detector(self.cfg.family)
 
     @staticmethod
     def _build_detector(family: str) -> cv.aruco.ArucoDetector:
@@ -120,6 +135,7 @@ class AprilTagDetector:
             raise RuntimeError("camera intrinsics not available")
 
         corners, ids, _ = self._detector.detectMarkers(image)
+        print(f"detected ids: {ids}")
         if ids is None or len(ids) == 0:
             raise RuntimeError("no AprilTags detected")
 
@@ -130,13 +146,13 @@ class AprilTagDetector:
             idx = 0
 
         pts = corners[idx].reshape(4, 2).astype(np.float32)
-        if self.refine_corners:
+        if self.cfg.refine_corners:
             win = (5, 5)
             zero_zone = (-1, -1)
             term = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.01)
             cv.cornerSubPix(image, pts, win, zero_zone, term)
 
-        s = self.tag_size / 2.0
+        s = self.cfg.tag_size_m / 2.0
         obj = np.array([[-s, s, 0.0],
                         [s, s, 0.0],
                         [s, -s, 0.0],
@@ -149,7 +165,7 @@ class AprilTagDetector:
         T_cam_tag = _rvec_tvec_to_T(rvec, tvec)
         T_tag_cam = _inv_T(T_cam_tag)
 
-        if self.to_camlink:
+        if self.cfg.to_camlink:
             T_camlink_tag = T_OPT2CAMLINK @ T_cam_tag
             T_tag_camlink = _inv_T(T_camlink_tag)
         else:
@@ -167,36 +183,28 @@ class AprilTagDetector:
 class AprilTagNode(Node):
     """ROS2 node that publishes AprilTag poses."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg:AprilConfig):
         super().__init__("apriltag_node")
-        self.declare_parameter("tag_id", 0)
-        self.declare_parameter("tag_size", 0.2286)
-        self.declare_parameter("family", "DICT_APRILTAG_36h11")
-        self.declare_parameter("refine_corners", True)
-        self.declare_parameter("to_camlink", False)
-        self.declare_parameter("camera_frame", "camera_optical")
+        self.cfg = cfg
+        self._detector = AprilTagDetector(self.cfg)
 
-        self._detector = AprilTagDetector(
-            family=self.get_parameter("family").get_parameter_value().string_value,
-            tag_size=self.get_parameter("tag_size").get_parameter_value().double_value,
-            refine_corners=self.get_parameter("refine_corners").get_parameter_value().bool_value,
-            to_camlink=self.get_parameter("to_camlink").get_parameter_value().bool_value,
-        )
-
-        self._desired_id = self.get_parameter("tag_id").get_parameter_value().integer_value
-        self._camera_frame = self.get_parameter("camera_frame").get_parameter_value().string_value
-
+        topic = lambda *p: '/'+osp.join(cfg.topic, *p)
         qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
-        self._camera_sub = self.create_subscription(CameraInfo, "camera_info", self._camera_info_cb, qos)
-        self._image_sub = self.create_subscription(Image, "image", self._image_cb, qos)
+        self._camera_sub = self.create_subscription(CameraInfo, topic("camera_info"), self._camera_info_cb, qos)
+        self._image_sub = self.create_subscription(Image, topic("image_raw"), self._image_cb, qos)
         self._pose_pub = self.create_publisher(PoseStamped, "apriltag_pose", qos)
         self._pose_camlink_pub = self.create_publisher(PoseStamped, "apriltag_pose_camlink", qos)
+
+        topic = lambda *p: '/'+osp.join('april', cfg.topic, *p)
+        self.pub_pose = self.create_publisher(PoseStamped, topic("tag_pose"), qos)
+        self.pub_mark = self.create_publisher(MarkerArray, topic("tag_markers"), 10)
+
         self._bridge = CvBridge()
 
     def _camera_info_cb(self, msg: CameraInfo) -> None:
         self._detector.set_camera_info(msg)
         if msg.header.frame_id:
-            self._camera_frame = msg.header.frame_id
+            self.cfg.camera_frame = msg.header.frame_id
 
     def _image_cb(self, msg: Image) -> None:
         if self._detector.K is None:
@@ -205,14 +213,48 @@ class AprilTagNode(Node):
 
         image = self._bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
 
+        print(self.cfg)
         try:
-            detection = self._detector.detect(image, self._desired_id)
+            detection = self._detector.detect(image, self.cfg.tag_id)
         except RuntimeError as err:
             self.get_logger().debug(str(err))
             return
 
-        pose_msg = self._to_pose(msg.header.stamp, self._camera_frame, detection.T_cam_tag)
+        pose_msg = self._to_pose(msg.header.stamp, self.cfg.camera_frame, detection.T_cam_tag)
+        print(self.cfg.camera_frame)
         self._pose_pub.publish(pose_msg)
+        self.pub_pose.publish(pose_msg)
+
+        # markers   
+        ms = MarkerArray()
+        # clr = Marker()
+        # clr.action = Marker.DELETEALL
+        # ms.markers.append(clr)
+
+        m = Marker()
+        m.header = Header(stamp=msg.header.stamp, frame_id=  self.cfg.camera_frame)
+        print(m.header)
+        m.ns = "apriltag"
+        m.id = 0
+        m.type = Marker.POINTS
+        m.action = Marker.ADD
+        m.scale.x = 0.1; m.scale.y = 0.1; m.scale.z = 0.1
+        m.colors = [ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.5)]+ [ColorRGBA(r=0.0, g=1.0, b=0.0, a=0.5) for _ in range(5)]
+        m.lifetime.sec = 0
+        pose = pose_msg.pose
+        print(pose)
+        corners = detection.corners
+        m.points = [
+                Point(x=pose.position.x, y=pose.position.y, z=pose.position.z),
+                *[Point(x=pose.position.x + (corner[0] - self._detector.K[0,2]) * 0.01,
+                        y=pose.position.y + (corner[1] - self._detector.K[1,2]) * 0.01,
+                        z=pose.position.z) for corner in corners]
+                ]
+
+        print(pose.position)
+        ms.markers.append(m)
+
+        self.pub_mark.publish(ms)
 
         if detection.T_camlink_tag is not None:
             pose_camlink = self._to_pose(msg.header.stamp, "camera_link", detection.T_camlink_tag)
@@ -233,17 +275,13 @@ class AprilTagNode(Node):
         return pose
 
 
-def main(args: Optional[list[str]] = None) -> None:
-    rclpy.init(args=args)
-    node = AprilTagNode()
+def main(cfg: AprilConfig):
+    rclpy.init()
+    node = AprilTagNode(cfg)
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
 
 
-__all__ = ["AprilTagDetection", "AprilTagDetector", "AprilTagNode", "main"]
-
-
-if __name__ == "__main__":  # pragma: no cover
-    main()
-
+if __name__ == "__main__":  
+    main(tyro.cli(AprilConfig))
