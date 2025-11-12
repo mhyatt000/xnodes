@@ -21,7 +21,19 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-"xnodes" = ["launch/*.launch.py"]
+"xnodes" = []  # keep, even if empty
 
-[project.entry-points."console_scripts"]
-apriltag_node = "xnodes.apriltag:main"
+[tool.setuptools.data-files]
+# ament markers
+"share/ament_index/resource_index/packages" = ["resource/xnodes"]
+"share/xnodes" = ["package.xml", "README.md"]
+# install every launch file under launch/** into share/xnodes/launch/**
+"share/xnodes/launch" = [
+  "launch/*.launch.py",
+  "launch/**/*.launch.py",
+  "launch/*.yaml",
+  "launch/**/*.yaml",
+  "launch/*.xml",
+  "launch/**/*.xml",
+]
+
