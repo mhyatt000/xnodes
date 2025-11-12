@@ -1,4 +1,6 @@
 from dataclasses import dataclass, field
+import numpy as np
+from rich import print
 from typing import List, Tuple
 
 import cv2
@@ -8,6 +10,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
+from geometry_msgs.msg import Pose, PoseArray
 
 import tyro
 
@@ -24,6 +27,18 @@ class ChessConfig:
     @property
     def square_size_in2m(self) -> float:
         return self.square_size * 0.0254  # inches to meters
+
+def arr2poses(arr: np.ndarray) -> PoseArray:
+    poses = PoseArray()
+    poses.poses = []
+    for i in range(arr.shape[0]):
+        p = Pose()
+        p.position.x = float(arr[i, 0])
+        p.position.y = float(arr[i, 1])
+        p.position.z = float(arr[i, 2])
+        # Orientation left as default (0,0,0,1)
+        poses.poses.append(p)
+    return poses
 
 class Chess(Node):
     def __init__(self, cfg: ChessConfig):
@@ -56,6 +71,7 @@ class Chess(Node):
             depth=5,
         )
         self.sub = self.create_subscription(Image, cfg.sub, self._on_image, qos)
+        self.mypub = self.create_publisher(PoseArray, 'chess', 10)
 
         self.get_logger().info(f"Chess listening on {cfg.sub} for {self.pattern_size} inner corners")
 
@@ -84,6 +100,7 @@ class Chess(Node):
             return ok, corners
 
     def _on_image(self, msg: Image):
+
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as e:
@@ -118,6 +135,10 @@ class Chess(Node):
                 cv2.imshow("chess", cv_img)
                 cv2.waitKey(1)
 
+
+        # print(np.array(self.objpoints).shape)
+        # print(np.array(self.imgpoints).shape)
+
     def _try_calibrate(self):
         if self.image_size is None or not self.imgpoints:
             return
@@ -149,7 +170,16 @@ class Chess(Node):
         fs.write("image_height", int(self.image_size[1]))
         fs.release()
         self.get_logger().info("wrote camera_calib.yaml")
+
+        objp = self._template_objp.reshape(-1, 3).T           # (3, N)
+        X_cam = ((R @ objp) + t.reshape(-1,1)).T                  # (3, N)
+        print(X_cam.shape)
+
+        poses = arr2poses(X_cam)
+        self.mypub.publish(poses)
+
         # After calibration, stop accumulating to avoid re-fitting on the same dataset
+        # print(self.objpoints)
         self.objpoints.clear()
         self.imgpoints.clear()
 
