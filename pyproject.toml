@@ -1,11 +1,39 @@
+[build-system]
+requires = ["setuptools", "wheel", "ament-setuptools"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "xnodes"
 version = "0.1.0"
-description = "Add your description here"
+description = "ROS2 nodes for cameras and AprilTags"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
-    "numpy",
+    "rclpy",
+    "sensor_msgs",
+    "geometry_msgs",
     "opencv-contrib-python",
+    "numpy",
     "tyro",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"xnodes" = []  # keep, even if empty
+
+[tool.setuptools.data-files]
+# ament markers
+"share/ament_index/resource_index/packages" = ["resource/xnodes"]
+"share/xnodes" = ["package.xml", "README.md"]
+# install every launch file under launch/** into share/xnodes/launch/**
+"share/xnodes/launch" = [
+  "launch/*.launch.py",
+  "launch/**/*.launch.py",
+  "launch/*.yaml",
+  "launch/**/*.yaml",
+  "launch/*.xml",
+  "launch/**/*.xml",
+]
+
