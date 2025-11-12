@@ -6,5 +6,12 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "numpy",
-    "opencv-contrib-python",
+    "opencv-contrib-python-headless",
+    "rclpy",
+    "sensor-msgs",
+    "std-msgs",
+    "std-srvs",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
