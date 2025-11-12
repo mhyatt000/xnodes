@@ -55,7 +55,7 @@ def generate_launch_description():
                 "frame_id": f"{name}_optical_frame",
                 "camera_info_url": f"file://{root}/config/camera_info/{name}.yaml",
                 "camera_name": name,
-                "framerate": fps,
+                # "framerate": fps,
                 }],
                 arguments=["--ros-args", "--log-level", "info"],
             )
