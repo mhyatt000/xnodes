@@ -1,6 +1,9 @@
 from dataclasses import dataclass
+from rich import print
+from geometry_msgs.msg import PoseArray, Pose
 from pathlib import Path
 from typing import Optional, Tuple, List
+import enum
 import time
 import numpy as np
 import rclpy
@@ -10,6 +13,9 @@ from geometry_msgs.msg import Point
 from std_msgs.msg import Float64MultiArray
 import tyro
 import yaml
+
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, qos_profile_sensor_data
+
 
 def build_marker(points_xyz: np.ndarray, frame: str, scale: float,
                  rgba: Tuple[float, float, float, float],
@@ -61,36 +67,46 @@ def load_points_from_yaml(path: Path) -> Tuple[np.ndarray, Optional[dict]]:
         return pts, meta
     raise ValueError("YAML must contain either 'points' or 'markers' with 'points'")
 
+class TYP(enum.Enum):
+    FLOAT = Float64MultiArray
+    POSE = PoseArray  
+
 @dataclass
 class Config:
     # Input
-    source: Optional[str] = None                 # topic to listen for Float64MultiArray (n*3)
-    file: Optional[Path] = None                  # YAML file. If provided and source=None, publish these points.
+    sub: Optional[str] = None                 # topic to listen for Float64MultiArray (n*3)
+    file: Optional[Path] = None                  # YAML file. If provided and sub=None, publish these points.
+    typ: TYP = TYP.FLOAT                      # Message type if sub is provided
     # Output
-    target: Optional[str] = None                 # MarkerArray topic. Defaults based on source.
+    pub: Optional[str] = None                 # MarkerArray topic. Defaults based on sub.
     frame: str = "world"
     # Viz
     scale: float = 0.03
     rgba: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 1.0)
     ns: str = "points"
     mid: int = 0
-    # Random mode (used when source=None and file=None)
+    # Random mode (used when sub=None and file=None)
     n: int = 50
     bounds: Tuple[float, float] = (-0.25, 0.25)    # uniform range per axis
     hz: float = 5.0 # publish rate
     once: bool = False                           # if True, publish once then exit
     seed: Optional[int] = 0
 
+
+
 class MarkerCLINode(Node):
     def __init__(self, cfg: Config):
         super().__init__("marker_cli")
-        target = cfg.target or (f"/{cfg.source}/markers" if cfg.source else "visualization_marker_array")
-        self.pub = self.create_publisher(MarkerArray, target, 10)
+        pub = cfg.pub or (f"/{cfg.sub}/markers" if cfg.sub else "visualization_marker_array")
+        print(pub)
+        self.pub = self.create_publisher(MarkerArray, pub, 10)
         self.cfg = cfg
 
-        if cfg.source:
-            self.sub = self.create_subscription(Float64MultiArray, cfg.source, self._cb, 10)
-            self.get_logger().info(f"listen='{cfg.source}' → publish='{target}' frame='{cfg.frame}'")
+        qos = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+
+        if cfg.sub:
+            self.sub = self.create_subscription(cfg.typ.value, cfg.sub, self._cb, qos)
+            self.get_logger().info(f"listen='{cfg.sub}' → publish='{pub}' frame='{cfg.frame}'")
         else:
             # immediate publish path (file or random)
             if cfg.file:
@@ -100,7 +116,7 @@ class MarkerCLINode(Node):
                 rgba  = meta.get("rgba",  cfg.rgba)
                 msg = build_marker(pts, frame, scale, rgba, cfg.ns, cfg.mid)
                 self.pub.publish(msg)
-                self.get_logger().info(f"published {len(pts)} points from '{cfg.file}' to '{target}' frame='{frame}'")
+                self.get_logger().info(f"published {len(pts)} points from '{cfg.file}' to '{pub}' frame='{frame}'")
                 if cfg.once:
                     # exit quickly
                     rclpy.shutdown()
@@ -117,12 +133,19 @@ class MarkerCLINode(Node):
                     self.create_timer(0.05, self._publish_once_and_exit)
 
     def _cb(self, msg: Float64MultiArray) -> None:
-        data = np.asarray(msg.data, dtype=float)
-        if data.size % 3 != 0:
-            self.get_logger().warn(f"len={data.size} not divisible by 3. drop.")
-            return
-        pts = data.reshape(-1, 3)
+
+        if self.cfg.typ == TYP.POSE:
+            pts = np.array([[p.position.x, p.position.y, p.position.z] for p in msg.poses], dtype=float)
+
+        if self.cfg.typ == TYP.FLOAT:
+            data = np.asarray(msg.data, dtype=float)
+            if data.size % 3 != 0:
+                self.get_logger().warn(f"len={data.size} not divisible by 3. drop.")
+                return
+            pts = data.reshape(-1, 3)
+
         out = build_marker(pts, self.cfg.frame, self.cfg.scale, self.cfg.rgba, self.cfg.ns, self.cfg.mid)
+        print(out)
         self.pub.publish(out)
 
     def _tick_random(self, lo: float, hi: float) -> None:
