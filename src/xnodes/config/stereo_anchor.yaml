@@ -1,0 +1,8 @@
+stereo_anchor_node:
+  ros__parameters:
+    world: "world"
+    anchor: "anchor_base"
+    floaters: ["cam_low", "cam_side"]
+    at: "/anchor_tracker/pose"
+    ft: ["/cam_low/pose", "/cam_side/pose"]
+
