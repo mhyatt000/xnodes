@@ -30,7 +30,7 @@ def generate_launch_description():
         raise RuntimeError("No /dev/cam* symlinks found")
 
     print(cam_links)
-    fps, width, height = 30, 640, 480
+    fps, width, height = 30.0, 640, 480
     nodes = []
 
     root = Path(os.environ["PIXI_PROJECT_ROOT"])
