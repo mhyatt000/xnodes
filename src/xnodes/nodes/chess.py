@@ -1,10 +1,13 @@
 from dataclasses import dataclass, field
-import numpy as np
 from rich import print
+from geometry_msgs.msg import TransformStamped
+import os.path as osp
+from tf2_ros import TransformBroadcaster
+
+import numpy as np
 from typing import List, Tuple
 
 import cv2
-import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -12,21 +15,27 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Pose, PoseArray
 
+import transforms3d.quaternions as tq
 import tyro
 
 
 @dataclass
 class ChessConfig:
     sub: str  # image topic
-    board: List[int] = field(default_factory=lambda: [8, 6])  # inner corners: [cols, rows]
-    square_size: float = 1.0               # meters per square edge; set correctly for metric extrinsics
-    min_samples: int = 15                    # calibrate after this many good detections
-    show: bool = False                       # draw corners in a window
-    use_sb: bool = True                      # use findChessboardCornersSB if True
+    board: List[int] = field(
+        default_factory=lambda: [8, 6]
+    )  # inner corners: [cols, rows]
+    square_size: float = (
+        1.0  # meters per square edge; set correctly for metric extrinsics
+    )
+    min_samples: int = 15  # calibrate after this many good detections
+    show: bool = False  # draw corners in a window
+    use_sb: bool = True  # use findChessboardCornersSB if True
 
     @property
     def square_size_in2m(self) -> float:
         return self.square_size * 0.0254  # inches to meters
+
 
 def arr2poses(arr: np.ndarray) -> PoseArray:
     poses = PoseArray()
@@ -39,6 +48,27 @@ def arr2poses(arr: np.ndarray) -> PoseArray:
         # Orientation left as default (0,0,0,1)
         poses.poses.append(p)
     return poses
+
+
+def mat4_to_transform(T: np.ndarray) -> TransformStamped:
+    # T is 4x4 homogeneous matrix
+    msg = TransformStamped()
+
+    # translation comes from the last column
+    msg.transform.translation.x = float(T[0, 3])
+    msg.transform.translation.y = float(T[1, 3])
+    msg.transform.translation.z = float(T[2, 3])
+
+    # rotation: convert 3x3 to quaternion
+    q = tq.mat2quat(T[:3, :3])  # returns [w, x, y, z]
+
+    msg.transform.rotation.w = float(q[0])
+    msg.transform.rotation.x = float(q[1])
+    msg.transform.rotation.y = float(q[2])
+    msg.transform.rotation.z = float(q[3])
+
+    return msg
+
 
 class Chess(Node):
     def __init__(self, cfg: ChessConfig):
@@ -57,12 +87,14 @@ class Chess(Node):
         # Pre-build the single board’s 3D points in the board frame
         # z = 0 plane; scale by square size to get metric extrinsics
         objp = np.zeros((1, self.pattern_size[0] * self.pattern_size[1], 3), np.float32)
-        objp[0, :, :2] = np.mgrid[0:self.pattern_size[0], 0:self.pattern_size[1]].T.reshape(-1, 2)
+        objp[0, :, :2] = np.mgrid[
+            0 : self.pattern_size[0], 0 : self.pattern_size[1]
+        ].T.reshape(-1, 2)
         objp *= float(cfg.square_size_in2m)
 
         self._template_objp = objp
-        self.objpoints = []   # list of (N,1,3)
-        self.imgpoints = []   # list of (N,1,2)
+        self.objpoints = []  # list of (N,1,3)
+        self.imgpoints = []  # list of (N,1,2)
         self.image_size = None
 
         qos = QoSProfile(
@@ -71,9 +103,13 @@ class Chess(Node):
             depth=5,
         )
         self.sub = self.create_subscription(Image, cfg.sub, self._on_image, qos)
-        self.mypub = self.create_publisher(PoseArray, 'chess', 10)
+        self.pub = self.create_publisher(PoseArray, osp.join(cfg.sub[1:], "chess"), 10)
+        self.bst = TransformBroadcaster(self)
+        self.parent = None
 
-        self.get_logger().info(f"Chess listening on {cfg.sub} for {self.pattern_size} inner corners")
+        self.get_logger().info(
+            f"Chess listening on {cfg.sub} for {self.pattern_size} inner corners"
+        )
 
     def _find_corners(self, gray):
         flags = (
@@ -100,7 +136,6 @@ class Chess(Node):
             return ok, corners
 
     def _on_image(self, msg: Image):
-
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except Exception as e:
@@ -109,6 +144,7 @@ class Chess(Node):
 
         if self.image_size is None:
             self.image_size = (cv_img.shape[1], cv_img.shape[0])  # (w, h)
+        self.parent = msg.header.frame_id  # to publish the points tf
 
         gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
         ok, corners = self._find_corners(gray)
@@ -134,7 +170,6 @@ class Chess(Node):
             if self.cfg.show:
                 cv2.imshow("chess", cv_img)
                 cv2.waitKey(1)
-
 
         # print(np.array(self.objpoints).shape)
         # print(np.array(self.imgpoints).shape)
@@ -171,17 +206,34 @@ class Chess(Node):
         fs.release()
         self.get_logger().info("wrote camera_calib.yaml")
 
-        objp = self._template_objp.reshape(-1, 3).T           # (3, N)
-        X_cam = ((R @ objp) + t.reshape(-1,1)).T                  # (3, N)
-        print(X_cam.shape)
+        objp = self._template_objp.reshape(-1, 3).T  # (3, N)
+        X_cam = ((R @ objp) + t.reshape(-1, 1)).T  # (3, N)
+
+        # print(X_cam)
 
         poses = arr2poses(X_cam)
-        self.mypub.publish(poses)
+        self.pub.publish(poses)
+
+        mat = np.eye(4)
+        mat[:3, :3] = R
+        mat[:3, 3] = t.reshape(3)
+
+        t = mat4_to_transform(mat)
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = self.parent  # parent frame
+        prefix = self.parent.split("_")[0]
+        t.child_frame_id = f"{prefix}_chessboard"  # child frame
+        print(t)
+
+        self.bst.sendTransform(t)
 
         # After calibration, stop accumulating to avoid re-fitting on the same dataset
-        # print(self.objpoints)
-        self.objpoints.clear()
-        self.imgpoints.clear()
+        # self.objpoints.clear()
+        # self.imgpoints.clear()
+        self.objpoints, self.imgpoints = (
+            self.objpoints[-self.cfg.min_samples :],
+            self.imgpoints[-self.cfg.min_samples :],
+        )
 
     def destroy_node(self):
         try:
@@ -208,4 +260,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
