@@ -49,6 +49,7 @@ setup(
             # add your nodes here
             # "apriltag_node = xnodes.apriltag:main",
             "stereo_anchor_node = xnodes.nodes.stereo_anchor_node:run",
+            "opencv_camera_node = xnodes.nodes.opencv_camera:main",
         ],
     },
 )
