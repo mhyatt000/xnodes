@@ -1,16 +1,16 @@
-from dataclasses import dataclass
-from typing import List, Dict, Optional
+from __future__ import annotations
 
+from dataclasses import dataclass
+
+from geometry_msgs.msg import PoseStamped, TransformStamped
+import numpy as np
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, TransformStamped
-from tf2_ros import Buffer, TransformListener, TransformBroadcaster
-import numpy as np
-from transforms3d.quaternions import quat2mat, mat2quat
+from tf2_ros import Buffer, TransformBroadcaster, TransformListener
+from transforms3d.quaternions import mat2quat, quat2mat
 
-import numpy as np
 
-#helpers so we can use transform3d which works with pixi/ros 
+# helpers so we can use transform3d which works with pixi/ros
 def quat_xyzw_to_matrix4(q):
     # q is [x, y, z, w]
     x, y, z, w = q
@@ -18,6 +18,7 @@ def quat_xyzw_to_matrix4(q):
     T = np.eye(4, dtype=float)
     T[:3, :3] = R
     return T
+
 
 def matrix4_to_quat_xyzw(T):
     # mat2quat returns [w, x, y, z]
@@ -30,11 +31,11 @@ class Config:
     # TF frame for anchor
     anchor: str
     # TF frames to publish for each floater
-    floaters: List[str]
+    floaters: list[str]
     # topic that publishes PoseStamped for the anchor->tracker link
     at: str
     # topics that publish PoseStamped for each floater->tracker link (same order as floaters)
-    ft: List[str]
+    ft: list[str]
     # global frame to publish results in (e.g., "world" or "map")
     world: str = "world"
 
@@ -98,9 +99,9 @@ class StereoAnchorNode(Node):
 
         # latest messages on the pose topics
         # anchor -> at pose
-        self.latest_at: Optional[PoseStamped] = None
+        self.latest_at: PoseStamped | None = None
         # at -> floater poses by floater name
-        self.latest_ft: Dict[str, PoseStamped] = {}
+        self.latest_ft: dict[str, PoseStamped] = {}
 
         # subscriptions for the live poses
         self.create_subscription(PoseStamped, self.cfg.at, self._on_at, 10)
@@ -116,8 +117,10 @@ class StereoAnchorNode(Node):
 
     def _make_ft_cb(self, floater_name: str):
         """Factory that returns a callback which stores at -> floater for a given floater."""
+
         def cb(msg: PoseStamped):
             self.latest_ft[floater_name] = msg
+
         return cb
 
     def _tick(self):
@@ -175,4 +178,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

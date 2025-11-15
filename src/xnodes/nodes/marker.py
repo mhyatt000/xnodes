@@ -1,25 +1,31 @@
+from __future__ import annotations
+
+import contextlib
 from dataclasses import dataclass
-from rich import print
-from geometry_msgs.msg import PoseArray, Pose
-from pathlib import Path
-from typing import Optional, Tuple, List
 import enum
+from pathlib import Path
 import time
+
+from geometry_msgs.msg import Point, PoseArray
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from visualization_msgs.msg import MarkerArray, Marker
-from geometry_msgs.msg import Point
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+from rich import print
 from std_msgs.msg import Float64MultiArray
 import tyro
+from visualization_msgs.msg import Marker, MarkerArray
 import yaml
 
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, qos_profile_sensor_data
 
-
-def build_marker(points_xyz: np.ndarray, frame: str, scale: float,
-                 rgba: Tuple[float, float, float, float],
-                 ns: str = "points", mid: int = 0) -> MarkerArray:
+def build_marker(
+    points_xyz: np.ndarray,
+    frame: str,
+    scale: float,
+    rgba: tuple[float, float, float, float],
+    ns: str = "points",
+    mid: int = 0,
+) -> MarkerArray:
     assert points_xyz.ndim == 2 and points_xyz.shape[1] == 3, "points must be (n,3)"
     m = Marker()
     m.header.frame_id = frame
@@ -35,13 +41,14 @@ def build_marker(points_xyz: np.ndarray, frame: str, scale: float,
     arr.markers.append(m)
     return arr
 
-def load_points_from_yaml(path: Path) -> Tuple[np.ndarray, Optional[dict]]:
+
+def load_points_from_yaml(path: Path) -> tuple[np.ndarray, dict | None]:
     """Returns (points[n,3], meta) where meta may include frame/scale/color from file."""
     with open(path, "r") as f:
         y = yaml.safe_load(f)
     meta = {}
     if "points" in y:
-        pts_raw: List = y["points"]
+        pts_raw: list = y["points"]
         if isinstance(pts_raw[0], dict):
             pts = np.array([[p["x"], p["y"], p["z"]] for p in pts_raw], dtype=float)
         else:
@@ -67,31 +74,32 @@ def load_points_from_yaml(path: Path) -> Tuple[np.ndarray, Optional[dict]]:
         return pts, meta
     raise ValueError("YAML must contain either 'points' or 'markers' with 'points'")
 
+
 class TYP(enum.Enum):
     FLOAT = Float64MultiArray
-    POSE = PoseArray  
+    POSE = PoseArray
+
 
 @dataclass
 class Config:
     # Input
-    sub: Optional[str] = None                 # topic to listen for Float64MultiArray (n*3)
-    file: Optional[Path] = None                  # YAML file. If provided and sub=None, publish these points.
-    typ: TYP = TYP.FLOAT                      # Message type if sub is provided
+    sub: str | None = None  # topic to listen for Float64MultiArray (n*3)
+    file: Path | None = None  # YAML file. If provided and sub=None, publish these points.
+    typ: TYP = TYP.FLOAT  # Message type if sub is provided
     # Output
-    pub: Optional[str] = None                 # MarkerArray topic. Defaults based on sub.
+    pub: str | None = None  # MarkerArray topic. Defaults based on sub.
     frame: str = "world"
     # Viz
     scale: float = 0.03
-    rgba: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 1.0)
+    rgba: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 1.0)
     ns: str = "points"
     mid: int = 0
     # Random mode (used when sub=None and file=None)
     n: int = 50
-    bounds: Tuple[float, float] = (-0.25, 0.25)    # uniform range per axis
-    hz: float = 5.0 # publish rate
-    once: bool = False                           # if True, publish once then exit
-    seed: Optional[int] = 0
-
+    bounds: tuple[float, float] = (-0.25, 0.25)  # uniform range per axis
+    hz: float = 5.0  # publish rate
+    once: bool = False  # if True, publish once then exit
+    seed: int | None = 0
 
 
 class MarkerCLINode(Node):
@@ -113,7 +121,7 @@ class MarkerCLINode(Node):
                 pts, meta = load_points_from_yaml(cfg.file)
                 frame = meta.get("frame", cfg.frame)
                 scale = meta.get("scale", cfg.scale)
-                rgba  = meta.get("rgba",  cfg.rgba)
+                rgba = meta.get("rgba", cfg.rgba)
                 msg = build_marker(pts, frame, scale, rgba, cfg.ns, cfg.mid)
                 self.pub.publish(msg)
                 self.get_logger().info(f"published {len(pts)} points from '{cfg.file}' to '{pub}' frame='{frame}'")
@@ -133,7 +141,6 @@ class MarkerCLINode(Node):
                     self.create_timer(0.05, self._publish_once_and_exit)
 
     def _cb(self, msg: Float64MultiArray) -> None:
-
         if self.cfg.typ == TYP.POSE:
             pts = np.array([[p.position.x, p.position.y, p.position.z] for p in msg.poses], dtype=float)
 
@@ -160,6 +167,7 @@ class MarkerCLINode(Node):
         time.sleep(0.05)
         rclpy.shutdown()
 
+
 def main(cfg: Config) -> None:
     rclpy.init()
     try:
@@ -167,11 +175,9 @@ def main(cfg: Config) -> None:
         rclpy.spin(node)
     finally:
         # shutdown might already be called
-        try:
+        with contextlib.suppress(Exception):
             rclpy.shutdown()
-        except Exception:
-            pass
+
 
 if __name__ == "__main__":
     main(tyro.cli(Config))
-
