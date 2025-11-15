@@ -1,26 +1,33 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field, asdict
 import copy
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
-
+from rich import print
 import cv2
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 import rclpy
 from sensor_msgs.msg import CameraInfo, Image
+import yaml
 
-try:  # pragma: no cover - optional dependency
-    import yaml
-except Exception:  # pragma: no cover - optional dependency
-    yaml = None
 
-try:  # pragma: no cover - optional dependency
-    from ament_index_python.packages import get_package_share_directory
-except Exception:  # pragma: no cover - optional dependency
-    get_package_share_directory = None
+from ament_index_python.packages import get_package_share_directory
+
+import tyro
+
+@dataclass
+class CamConfig:
+    device: str = "/dev/video0"
+    image_size: Sequence[int] = field(default_factory=lambda: [640, 480])
+    output_encoding: str = "bgr8"
+    camera_name: str = "camera"
+    frame_id: str = "camera_optical_frame"
+    fps: float = 30.0
+    camera_info_url: str = ""
 
 
 class OpenCVCameraNode(Node):
@@ -31,15 +38,29 @@ class OpenCVCameraNode(Node):
         self.bridge = CvBridge()
 
         self.video_device = self.declare_parameter("video_device", "/dev/video0").value
+        self.video_id = int(self.declare_parameter("video_id", -1).value)
         image_size = self.declare_parameter("image_size", [640, 480]).value
         self.encoding = self.declare_parameter("output_encoding", "bgr8").value
         self.camera_name = self.declare_parameter("camera_name", "camera").value
         self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
         self.fps = float(self.declare_parameter("fps", 30.0).value)
         self.camera_info_url = self.declare_parameter("camera_info_url", "").value
-
         self.width, self.height = self._parse_image_size(image_size)
-        self.cap = self._open_camera(self.video_device)
+
+        device = self.video_device if self.video_id < 0 else self.video_id
+
+        self.cfg = CamConfig(
+            device=device,
+            image_size=[self.width, self.height],
+            output_encoding=self.encoding,
+            camera_name=self.camera_name,
+            frame_id=self.frame_id,
+            fps=self.fps,
+            camera_info_url=self.camera_info_url,
+        )
+        print(self.cfg)
+
+        self.cap = self._open_camera(self.cfg.device)
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -79,9 +100,6 @@ class OpenCVCameraNode(Node):
         path = self._resolve_url(self.camera_info_url)
         if path is None:
             self.get_logger().warn(f"Unsupported camera_info_url: {self.camera_info_url}")
-            return CameraInfo()
-        if yaml is None:
-            self.get_logger().warn("PyYAML is not installed; skipping camera_info file load")
             return CameraInfo()
         try:
             data = yaml.safe_load(path.read_text()) or {}
@@ -169,11 +187,11 @@ class OpenCVCameraNode(Node):
         cy = info.height / 2.0
         if not info.d:
             info.d = [0.0, 0.0, 0.0, 0.0, 0.0]
-        if not info.k:
+        if not info.k.any():
             info.k = [1.0, 0.0, cx, 0.0, 1.0, cy, 0.0, 0.0, 1.0]
-        if not info.r:
+        if not info.r.any():
             info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        if not info.p:
+        if not info.p.any():
             info.p = [1.0, 0.0, cx, 0.0, 0.0, 1.0, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         info.distortion_model = info.distortion_model or "plumb_bob"
         info.width = int(info.width)

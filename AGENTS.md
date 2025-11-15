@@ -54,3 +54,4 @@ Namespaces are one honking great idea -- let's do more of those!
   test and maintain. Break down long functions into smaller, single-purpose
   functions to adhere to the Single Responsibility Principle. cyclomatic complexity (CC) should be no more than 8, but 4-5 is better.
 * Duplicated Code. keep it dry
+* excessive try/except blocks. only use them when necessary. sometimes in robotics it isneccessary to catch exceptions, but use sparingly.
