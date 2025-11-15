@@ -1,12 +1,15 @@
-from launch import LaunchDescription
+from __future__ import annotations
+
+from ament_index_python.packages import get_package_share_directory
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, SetEnvironmentVariable
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-
-from launch_ros.actions import Node, ComposableNodeContainer, LoadComposableNodes, PushRosNamespace
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import ComposableNodeContainer, LoadComposableNodes, Node, PushRosNamespace
 from launch_ros.descriptions import ComposableNode
-from ament_index_python.packages import get_package_share_directory
+
+from launch import LaunchDescription
+
 
 def generate_launch_description():
     ns = LaunchConfiguration("ns")
@@ -14,12 +17,10 @@ def generate_launch_description():
     log_level = LaunchConfiguration("log_level")
 
     declare_ns = DeclareLaunchArgument("ns", default_value="", description="ROS namespace")
-    declare_use_rviz = DeclareLaunchArgument("use_rviz", default_value="false", choices=["true","false"])
+    declare_use_rviz = DeclareLaunchArgument("use_rviz", default_value="false", choices=["true", "false"])
     declare_log = DeclareLaunchArgument("log_level", default_value="info")
 
-    params_file = PathJoinSubstitution(
-        [get_package_share_directory("your_pkg"), "config", "params.yaml"]
-    )
+    params_file = PathJoinSubstitution([get_package_share_directory("your_pkg"), "config", "params.yaml"])
 
     # regular node
     cam_node = Node(
@@ -69,29 +70,30 @@ def generate_launch_description():
 
     # optional RViz include
     rviz_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            [get_package_share_directory("your_pkg"), "/launch/rviz.launch.py"]
-        ),
+        PythonLaunchDescriptionSource([get_package_share_directory("your_pkg"), "/launch/rviz.launch.py"]),
         condition=IfCondition(use_rviz),
     )
 
     # namespace group (keeps TF and topics clean)
-    in_namespace = GroupAction([
-        PushRosNamespace(ns),
-        cam_node,
-        container,
-        load_nodes,
-        rviz_launch,
-    ])
+    in_namespace = GroupAction(
+        [
+            PushRosNamespace(ns),
+            cam_node,
+            container,
+            load_nodes,
+            rviz_launch,
+        ]
+    )
 
     # example env pin
     domain_env = SetEnvironmentVariable("ROS_DOMAIN_ID", "42")
 
-    return LaunchDescription([
-        domain_env,
-        declare_ns,
-        declare_use_rviz,
-        declare_log,
-        in_namespace,
-    ])
-
+    return LaunchDescription(
+        [
+            domain_env,
+            declare_ns,
+            declare_use_rviz,
+            declare_log,
+            in_namespace,
+        ]
+    )
