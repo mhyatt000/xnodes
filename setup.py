@@ -1,6 +1,9 @@
-from setuptools import setup, find_packages
+from __future__ import annotations
+
 from glob import glob
 import os
+
+from setuptools import find_packages, setup
 
 package_name = "xnodes"
 
