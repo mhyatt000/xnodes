@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-print("importing libraries")
-
 import sm
 from sm import PlotCollection
 import aslam_cv_backend as acvb
@@ -232,7 +230,7 @@ def parseArgs():
     # Parser the argument list
     try:
         parsed = parser.parse_args()
-    except:
+    except Exception:
         sys.exit(2)
 
     # some checks
