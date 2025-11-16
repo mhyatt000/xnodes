@@ -48,6 +48,8 @@ class OpenCVCameraNode(Node):
         self.width, self.height = self._parse_image_size(image_size)
 
         device = self.video_device if self.video_id < 0 else self.video_id
+        self.device = self._normalize_device_name(device)
+        self.topic_prefix = f"/cam/{self.device}"
 
         self.cfg = CamConfig(
             device=device,
@@ -67,8 +69,8 @@ class OpenCVCameraNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
         )
-        self.image_pub = self.create_publisher(Image, "image_raw", qos)
-        self.info_pub = self.create_publisher(CameraInfo, "camera_info", qos)
+        self.image_pub = self.create_publisher(Image, f"{self.topic_prefix}/image_raw", qos)
+        self.info_pub = self.create_publisher(CameraInfo, f"{self.topic_prefix}/camera_info", qos)
 
         self.base_info = self._load_camera_info()
 
@@ -76,7 +78,7 @@ class OpenCVCameraNode(Node):
         self.timer = self.create_timer(period, self._tick)
 
         self.get_logger().info(
-            f"Publishing {self.video_device} as /image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+            f"Publishing {self.video_device} as {self.topic_prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
         )
 
     def _parse_image_size(self, value: Sequence[float | int]) -> tuple[int, int]:
@@ -196,6 +198,15 @@ class OpenCVCameraNode(Node):
         info.distortion_model = info.distortion_model or "plumb_bob"
         info.width = int(info.width)
         info.height = int(info.height)
+
+    def _normalize_device_name(self, value: str | int) -> str:
+        name = str(value).strip()
+        if not name:
+            return "camera"
+        name = name.lstrip("/")
+        for ch in "/\\: ":
+            name = name.replace(ch, "_")
+        return name
 
     def destroy_node(self) -> None:
         if self.cap.isOpened():
