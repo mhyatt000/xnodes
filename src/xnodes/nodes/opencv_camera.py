@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 import copy
 from pathlib import Path
 from typing import Sequence
@@ -21,7 +21,7 @@ import tyro
 
 @dataclass
 class CamConfig:
-    device: str = "/dev/video0"
+    device: str | int = "/dev/video0"
     image_size: Sequence[int] = field(default_factory=lambda: [640, 480])
     output_encoding: str = "bgr8"
     camera_name: str = "camera"
@@ -33,33 +33,23 @@ class CamConfig:
 class OpenCVCameraNode(Node):
     """Minimal OpenCV-based camera publisher for /image_raw and /camera_info."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: CamConfig | None = None) -> None:
         super().__init__("opencv_camera")
         self.bridge = CvBridge()
 
-        self.video_device = self.declare_parameter("video_device", "/dev/video0").value
-        self.video_id = int(self.declare_parameter("video_id", -1).value)
-        image_size = self.declare_parameter("image_size", [640, 480]).value
-        self.encoding = self.declare_parameter("output_encoding", "bgr8").value
-        self.camera_name = self.declare_parameter("camera_name", "camera").value
-        self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
-        self.fps = float(self.declare_parameter("fps", 30.0).value)
-        self.camera_info_url = self.declare_parameter("camera_info_url", "").value
-        self.width, self.height = self._parse_image_size(image_size)
+        if cfg is None:
+            cfg = self._cfg_from_parameters()
+        self.cfg = cfg
 
-        device = self.video_device if self.video_id < 0 else self.video_id
-        self.device = self._normalize_device_name(device)
-        self.topic_prefix = f"/cam/{self.device}"
+        self.width, self.height = self._parse_image_size(cfg.image_size)
+        self.encoding = cfg.output_encoding
+        self.camera_name = cfg.camera_name
+        self.frame_id = cfg.frame_id
+        self.fps = float(cfg.fps)
+        self.camera_info_url = cfg.camera_info_url
+        self.device_label = self._normalize_device_name(cfg.device)
+        self.topic_prefix = f"/cam/{self.device_label}"
 
-        self.cfg = CamConfig(
-            device=device,
-            image_size=[self.width, self.height],
-            output_encoding=self.encoding,
-            camera_name=self.camera_name,
-            frame_id=self.frame_id,
-            fps=self.fps,
-            camera_info_url=self.camera_info_url,
-        )
         print(self.cfg)
 
         self.cap = self._open_camera(self.cfg.device)
@@ -78,7 +68,28 @@ class OpenCVCameraNode(Node):
         self.timer = self.create_timer(period, self._tick)
 
         self.get_logger().info(
-            f"Publishing {self.video_device} as {self.topic_prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+            f"Publishing {self.cfg.device} as {self.topic_prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+        )
+
+    def _cfg_from_parameters(self) -> CamConfig:
+        video_device = self.declare_parameter("video_device", "/dev/video0").value
+        video_id = int(self.declare_parameter("video_id", -1).value)
+        image_size = self.declare_parameter("image_size", [640, 480]).value
+        encoding = self.declare_parameter("output_encoding", "bgr8").value
+        camera_name = self.declare_parameter("camera_name", "camera").value
+        frame_default = f"{camera_name}_optical_frame"
+        frame_id = self.declare_parameter("frame_id", frame_default).value
+        fps = float(self.declare_parameter("fps", 30.0).value)
+        camera_info_url = self.declare_parameter("camera_info_url", "").value
+        device = video_device if video_id < 0 else video_id
+        return CamConfig(
+            device=device,
+            image_size=image_size,
+            output_encoding=encoding,
+            camera_name=camera_name,
+            frame_id=frame_id,
+            fps=fps,
+            camera_info_url=camera_info_url,
         )
 
     def _parse_image_size(self, value: Sequence[float | int]) -> tuple[int, int]:
@@ -86,7 +97,7 @@ class OpenCVCameraNode(Node):
             raise ValueError("image_size must contain [width, height]")
         return int(value[0]), int(value[1])
 
-    def _open_camera(self, device: str) -> cv2.VideoCapture:
+    def _open_camera(self, device: str | int) -> cv2.VideoCapture:
         cap = cv2.VideoCapture(device)
         if not cap.isOpened():
             raise RuntimeError(f"Failed to open camera {device}")
@@ -209,14 +220,14 @@ class OpenCVCameraNode(Node):
         return name
 
     def destroy_node(self) -> None:
-        if self.cap.isOpened():
+        if hasattr(self, "cap") and self.cap.isOpened():
             self.cap.release()
         super().destroy_node()
 
 
-def main() -> None:
+def run(cfg: CamConfig | None = None) -> None:
     rclpy.init()
-    node = OpenCVCameraNode()
+    node = OpenCVCameraNode(cfg)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:  # pragma: no cover - interactive node
@@ -226,5 +237,9 @@ def main() -> None:
         rclpy.shutdown()
 
 
+def main(cfg: CamConfig) -> None:
+    run(cfg)
+
+
 if __name__ == "__main__":  # pragma: no cover - script entry
-    main()
+    main(tyro.cli(CamConfig))
