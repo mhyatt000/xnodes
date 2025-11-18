@@ -1,23 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
 import copy
+from dataclasses import dataclass, field
+import enum
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
-from rich import print
+
+from ament_index_python.packages import get_package_share_directory
 import cv2
 from cv_bridge import CvBridge
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-import rclpy
+from rich import print
 from sensor_msgs.msg import CameraInfo, Image
 import yaml
 
 
-from ament_index_python.packages import get_package_share_directory
+class RES(enum.Enum):
+    HD = (1280, 720)
+    FHD = (1920, 1080)
+    QHD = (2560, 1440)
+    UHD_4K = (3840, 2160)
 
-import tyro
+    VGA = (640, 480)
+    SVGA = (800, 600)
+
+    RES_224 = (224, 224)
+
 
 @dataclass
 class CamConfig:
@@ -61,6 +72,12 @@ class OpenCVCameraNode(Node):
         print(self.cfg)
 
         self.cap = self._open_camera(self.cfg.device)
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.width))
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.height))
+        if self.fps > 0:
+            self.cap.set(cv2.CAP_PROP_FPS, float(self.fps))
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -88,10 +105,6 @@ class OpenCVCameraNode(Node):
         cap = cv2.VideoCapture(device)
         if not cap.isOpened():
             raise RuntimeError(f"Failed to open camera {device}")
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.width))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.height))
-        if self.fps > 0:
-            cap.set(cv2.CAP_PROP_FPS, float(self.fps))
         return cap
 
     def _load_camera_info(self) -> CameraInfo:

@@ -114,7 +114,7 @@ unfixable = [
     "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
     "RUF059", # Unpacked variable `pos` is never used
 ]
-<
+
 [tool.ruff.lint.per-file-ignores]
 "**/__init__.py" = ["F401"] # allow unused imports in top-level __init__.py
 "tests/**"       = ["T201","T203"] # allow print/pprint in tests
