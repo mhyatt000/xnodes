@@ -15,6 +15,7 @@ from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rich import print
 from sensor_msgs.msg import CameraInfo, Image
+import tyro
 import yaml
 
 
@@ -44,30 +45,36 @@ class CamConfig:
 class OpenCVCameraNode(Node):
     """Minimal OpenCV-based camera publisher for /image_raw and /camera_info."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: CamConfig | None = None) -> None:
         super().__init__("opencv_camera")
         self.bridge = CvBridge()
 
-        self.video_device = self.declare_parameter("video_device", "/dev/video0").value
-        self.video_id = int(self.declare_parameter("video_id", -1).value)
-        image_size = self.declare_parameter("image_size", [640, 480]).value
-        self.encoding = self.declare_parameter("output_encoding", "bgr8").value
-        self.camera_name = self.declare_parameter("camera_name", "camera").value
-        self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
-        self.fps = float(self.declare_parameter("fps", 30.0).value)
-        self.camera_info_url = self.declare_parameter("camera_info_url", "").value
+        if cfg is None:
+            self.video_device = self.declare_parameter("video_device", "/dev/video0").value
+            self.video_id = int(self.declare_parameter("video_id", -1).value)
+            image_size = self.declare_parameter("image_size", [640, 480]).value
+            self.encoding = self.declare_parameter("output_encoding", "bgr8").value
+            self.camera_name = self.declare_parameter("camera_name", "camera").value
+            self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
+            self.fps = float(self.declare_parameter("fps", 30.0).value)
+            self.camera_info_url = self.declare_parameter("camera_info_url", "").value
+
         self.width, self.height = self._parse_image_size(image_size)
 
         device = self.video_device if self.video_id < 0 else self.video_id
 
-        self.cfg = CamConfig(
-            device=device,
-            image_size=[self.width, self.height],
-            output_encoding=self.encoding,
-            camera_name=self.camera_name,
-            frame_id=self.frame_id,
-            fps=self.fps,
-            camera_info_url=self.camera_info_url,
+        self.cfg = (
+            CamConfig(
+                device=device,
+                image_size=[self.width, self.height],
+                output_encoding=self.encoding,
+                camera_name=self.camera_name,
+                frame_id=self.frame_id,
+                fps=self.fps,
+                camera_info_url=self.camera_info_url,
+            )
+            if cfg is None
+            else cfg
         )
         print(self.cfg)
 
@@ -102,6 +109,7 @@ class OpenCVCameraNode(Node):
         return int(value[0]), int(value[1])
 
     def _open_camera(self, device: str) -> cv2.VideoCapture:
+        device = int(device) if isinstance(device, int) or device.isdigit() else device
         cap = cv2.VideoCapture(device)
         if not cap.isOpened():
             raise RuntimeError(f"Failed to open camera {device}")
@@ -216,17 +224,17 @@ class OpenCVCameraNode(Node):
         super().destroy_node()
 
 
-def main() -> None:
+def run(cfg: CamConfig | None = None):
     rclpy.init()
-    node = OpenCVCameraNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:  # pragma: no cover - interactive node
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node = OpenCVCameraNode(cfg)
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+def main(cfg: CamConfig):
+    run(cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover - script entry
-    main()
+    main(tyro.cli(CamConfig))
