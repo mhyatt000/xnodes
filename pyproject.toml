@@ -15,6 +15,7 @@ dependencies = [
     "opencv-contrib-python",
     "numpy",
     "tyro",
+    "webpolicy",
 ]
 
 [tool.setuptools.packages.find]
