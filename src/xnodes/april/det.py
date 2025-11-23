@@ -27,7 +27,19 @@ def _tag_row_col(tag_id: int, cfg: AprilGridConfig) -> tuple[int, int] | None:
     return r, c
 
 
-def _tag_corners_3d(row: int, col: int, cfg: AprilGridConfig) -> np.ndarray:
+def expand_points(points, scale=1.25):
+    """
+    points: (N, 2) array-like
+    scale: factor to move points away from center
+    returns: (N, 2) scaled points
+    """
+    pts = np.asarray(points, dtype=float)
+    center = pts.mean(axis=0)  # compute centroid
+    expanded = center + (pts - center) * scale
+    return expanded
+
+
+def _corners_3d_from_obj(row: int, col: int, cfg: AprilGridConfig) -> np.ndarray:
     """
     3D corners in board frame, shape (4, 3).
 
@@ -55,6 +67,51 @@ def _tag_corners_3d(row: int, col: int, cfg: AprilGridConfig) -> np.ndarray:
         dtype=np.float32,
     )
     return corners
+
+
+def _corners_3d_from_pose(pose_R, pose_t, tag_size):
+    """
+    Compute the AprilTag's 4 corners in the camera frame.
+
+    pose_R: (3,3) rotation matrix (tag->camera)
+    pose_t: (3,1) translation vector (tag->camera)
+    tag_size: side length of the tag in meters
+    """
+    half = tag_size / 2.0
+
+    # Tag-frame corners (origin at tag center, z=0)
+    corners_tag = np.array(
+        [
+            [-half, half, 0.0],  # top-left
+            [half, half, 0.0],  # top-right
+            [half, -half, 0.0],  # bottom-right
+            [-half, -half, 0.0],  # bottom-left
+        ]
+    )  # (4,3)
+
+    # Transform to camera frame: R @ p + t
+    corners_tag_T = corners_tag.T  # (3,4)
+    corners_cam_T = pose_R @ corners_tag_T + pose_t  # (3,4)
+    return corners_cam_T.T  # (4,3)
+
+
+def project_points(K, pts_3d):
+    """
+    Project 3D camera-frame points to 2D image.
+
+    K: (3,3) camera intrinsics
+    pts_3d: (N,3) points in camera frame
+    """
+    pts = pts_3d.T  # (3,N)
+
+    # Normalize by Z
+    pts_norm = pts / pts[2]
+
+    # Project
+    pix_h = K @ pts_norm  # (3,N)
+    pix = (pix_h[:2] / pix_h[2]).T  # (N,2)
+
+    return pix
 
 
 # --- detector factory ---
@@ -87,6 +144,7 @@ def detect_aprilgrid(
     image_gray: np.ndarray,
     cfg: AprilGridConfig,
     detector: Detector,
+    camera_params: list[float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """
     Detect AprilTag grid correspondences with pupil-apriltags.
@@ -104,15 +162,19 @@ def detect_aprilgrid(
     # pupil-apriltags API
     detections = detector.detect(
         image_gray,
-        estimate_tag_pose=False,  # we do our own pose if needed
-        camera_params=None,
+        estimate_tag_pose=True,
+        camera_params=camera_params,
         tag_size=cfg.tagSize,
     )
 
-    print(detections)
     all_pts2d = []
     all_pts3d = []
     tag_obs = []
+
+    if detections:
+        print(detections[0])
+    else:
+        return
 
     for det in detections:
         tag_id = det.tag_id
@@ -124,7 +186,7 @@ def detect_aprilgrid(
 
         # corners: (4, 2), order: TL, TR, BR, BL
         corners2d = np.asarray(det.corners, dtype=np.float32)  # (4, 2)
-        corners3d = _tag_corners_3d(row, col, cfg)  # (4, 3)
+        corners3d = _corners_3d_from_obj(row, col, cfg)  # (4, 3)
 
         all_pts2d.append(corners2d)
         all_pts3d.append(corners3d)

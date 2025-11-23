@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 import enum
+import os
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
@@ -109,6 +110,13 @@ class OpenCVCameraNode(Node):
             f"Publishing {self.cfg.device} as {prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
         )
 
+    @property
+    def url(self) -> Path:
+        """default camera URL"""
+        root = os.environ.get("PIXI_PROJECT_ROOT")
+        path = Path(root) / "cam" / f"c{self.cfg.device}"
+        return path
+
     def _parse_image_size(self, value: Sequence[float | int]) -> tuple[int, int]:
         if len(value) != 2:
             raise ValueError("image_size must contain [width, height]")
@@ -122,12 +130,13 @@ class OpenCVCameraNode(Node):
         return cap
 
     def _load_camera_info(self) -> CameraInfo:
-        if not self.camera_info_url:
-            return CameraInfo()
-        path = self._resolve_url(self.camera_info_url)
-        if path is None:
+        url = self.camera_info_url
+        if url:
+            path = self._resolve_url(url)
+        if not path:
             self.get_logger().warn(f"Unsupported camera_info_url: {self.camera_info_url}")
-            return CameraInfo()
+            path = self.url
+
         try:
             data = yaml.safe_load(path.read_text()) or {}
         except Exception as exc:  # pragma: no cover - filesystem errors
