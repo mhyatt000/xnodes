@@ -91,8 +91,10 @@ class OpenCVCameraNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
         )
-        self.image_pub = self.create_publisher(Image, "image_raw", qos)
-        self.info_pub = self.create_publisher(CameraInfo, "camera_info", qos)
+
+        prefix = f"cam/c{device}"
+        self.image_pub = self.create_publisher(Image, f"{prefix}/image_raw", qos)
+        self.info_pub = self.create_publisher(CameraInfo, f"{prefix}/camera_info", qos)
 
         self.base_info = self._load_camera_info()
 
@@ -100,7 +102,8 @@ class OpenCVCameraNode(Node):
         self.timer = self.create_timer(period, self._tick)
 
         self.get_logger().info(
-            f"Publishing {self.video_device} as /image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+            # f"Publishing {self.video_device} as /image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+            f"Publishing {self.cfg.device} as {prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
         )
 
     def _parse_image_size(self, value: Sequence[float | int]) -> tuple[int, int]:
