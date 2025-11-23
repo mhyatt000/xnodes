@@ -1,23 +1,36 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
 import copy
+from dataclasses import dataclass, field
+import enum
+import os
 from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
-from rich import print
+
+from ament_index_python.packages import get_package_share_directory
 import cv2
 from cv_bridge import CvBridge
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-import rclpy
+from rich import print
 from sensor_msgs.msg import CameraInfo, Image
+import tyro
 import yaml
 
 
-from ament_index_python.packages import get_package_share_directory
+class RES(enum.Enum):
+    HD = (1280, 720)
+    FHD = (1920, 1080)
+    QHD = (2560, 1440)
+    UHD_4K = (3840, 2160)
 
-import tyro
+    VGA = (640, 480)
+    SVGA = (800, 600)
+
+    RES_224 = (224, 224)
+
 
 @dataclass
 class CamConfig:
@@ -33,44 +46,60 @@ class CamConfig:
 class OpenCVCameraNode(Node):
     """Minimal OpenCV-based camera publisher for /image_raw and /camera_info."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg: CamConfig | None = None) -> None:
         super().__init__("opencv_camera")
         self.bridge = CvBridge()
 
-        self.video_device = self.declare_parameter("video_device", "/dev/video0").value
-        self.video_id = int(self.declare_parameter("video_id", -1).value)
-        image_size = self.declare_parameter("image_size", [640, 480]).value
-        self.encoding = self.declare_parameter("output_encoding", "bgr8").value
-        self.camera_name = self.declare_parameter("camera_name", "camera").value
-        self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
-        self.fps = float(self.declare_parameter("fps", 30.0).value)
-        self.camera_info_url = self.declare_parameter("camera_info_url", "").value
-        self.width, self.height = self._parse_image_size(image_size)
+        if cfg is None:
+            self.video_device = self.declare_parameter("video_device", "/dev/video0").value
+            self.video_id = int(self.declare_parameter("video_id", -1).value)
+            self.encoding = self.declare_parameter("output_encoding", "bgr8").value
+            self.camera_name = self.declare_parameter("camera_name", "camera").value
+            self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
+            self.fps = float(self.declare_parameter("fps", 30.0).value)
+            self.camera_info_url = self.declare_parameter("camera_info_url", "").value
+
+            self.width = self.declare_parameter("width", 640).value
+            self.height = self.declare_parameter("height", 480).value
+
+        # self.width, self.height = self._parse_image_size(image_size)
 
         device = self.video_device if self.video_id < 0 else self.video_id
         self.device = self._normalize_device_name(device)
-        self.topic_prefix = f"/cam/{self.device}"
 
-        self.cfg = CamConfig(
-            device=device,
-            image_size=[self.width, self.height],
-            output_encoding=self.encoding,
-            camera_name=self.camera_name,
-            frame_id=self.frame_id,
-            fps=self.fps,
-            camera_info_url=self.camera_info_url,
+        self.cfg = (
+            CamConfig(
+                device=device,
+                image_size=[self.width, self.height],
+                output_encoding=self.encoding,
+                camera_name=self.camera_name,
+                frame_id=self.frame_id,
+                fps=self.fps,
+                camera_info_url=self.camera_info_url,
+            )
+            if cfg is None
+            else cfg
         )
         print(self.cfg)
 
         self.cap = self._open_camera(self.cfg.device)
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+        if self.width > 0 and self.height > 0:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.width))
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.height))
+        if self.fps > 0:
+            self.cap.set(cv2.CAP_PROP_FPS, float(self.fps))
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
         )
-        self.image_pub = self.create_publisher(Image, f"{self.topic_prefix}/image_raw", qos)
-        self.info_pub = self.create_publisher(CameraInfo, f"{self.topic_prefix}/camera_info", qos)
+
+        prefix = f"cam/c{device}"
+        self.image_pub = self.create_publisher(Image, f"{prefix}/image_raw", qos)
+        self.info_pub = self.create_publisher(CameraInfo, f"{prefix}/camera_info", qos)
 
         self.base_info = self._load_camera_info()
 
@@ -78,8 +107,16 @@ class OpenCVCameraNode(Node):
         self.timer = self.create_timer(period, self._tick)
 
         self.get_logger().info(
-            f"Publishing {self.video_device} as {self.topic_prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+            # f"Publishing {self.video_device} as /image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
+            f"Publishing {self.cfg.device} as {prefix}/image_raw at {self.fps:.1f} FPS ({self.width}x{self.height})"
         )
+
+    @property
+    def url(self) -> Path:
+        """default camera URL"""
+        root = os.environ.get("PIXI_PROJECT_ROOT")
+        path = Path(root) / "cam" / f"c{self.cfg.device}"
+        return path
 
     def _parse_image_size(self, value: Sequence[float | int]) -> tuple[int, int]:
         if len(value) != 2:
@@ -87,22 +124,20 @@ class OpenCVCameraNode(Node):
         return int(value[0]), int(value[1])
 
     def _open_camera(self, device: str) -> cv2.VideoCapture:
+        device = int(device) if isinstance(device, int) or device.isdigit() else device
         cap = cv2.VideoCapture(device)
         if not cap.isOpened():
             raise RuntimeError(f"Failed to open camera {device}")
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.width))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.height))
-        if self.fps > 0:
-            cap.set(cv2.CAP_PROP_FPS, float(self.fps))
         return cap
 
     def _load_camera_info(self) -> CameraInfo:
-        if not self.camera_info_url:
-            return CameraInfo()
-        path = self._resolve_url(self.camera_info_url)
-        if path is None:
+        url = self.camera_info_url
+        if url:
+            path = self._resolve_url(url)
+        if not path:
             self.get_logger().warn(f"Unsupported camera_info_url: {self.camera_info_url}")
-            return CameraInfo()
+            path = self.url
+
         try:
             data = yaml.safe_load(path.read_text()) or {}
         except Exception as exc:  # pragma: no cover - filesystem errors
@@ -164,6 +199,8 @@ class OpenCVCameraNode(Node):
         h, w = frame.shape[:2]
         if w == self.width and h == self.height:
             return frame
+        if self.width <= 0 or self.height <= 0:
+            return frame
         return cv2.resize(frame, (self.width, self.height))
 
     def _frame_to_msg(self, frame):
@@ -214,17 +251,17 @@ class OpenCVCameraNode(Node):
         super().destroy_node()
 
 
-def main() -> None:
+def run(cfg: CamConfig | None = None):
     rclpy.init()
-    node = OpenCVCameraNode()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:  # pragma: no cover - interactive node
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    node = OpenCVCameraNode(cfg)
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+def main(cfg: CamConfig):
+    run(cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover - script entry
-    main()
+    main(tyro.cli(CamConfig))

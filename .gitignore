@@ -1,4 +1,5 @@
 *.npy
+*.pdf
 *.json
 
 # Byte-compiled / optimized / DLL files
