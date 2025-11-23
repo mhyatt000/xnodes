@@ -65,6 +65,7 @@ class OpenCVCameraNode(Node):
         # self.width, self.height = self._parse_image_size(image_size)
 
         device = self.video_device if self.video_id < 0 else self.video_id
+        self.device = self._normalize_device_name(device)
 
         self.cfg = (
             CamConfig(
@@ -234,6 +235,15 @@ class OpenCVCameraNode(Node):
         info.distortion_model = info.distortion_model or "plumb_bob"
         info.width = int(info.width)
         info.height = int(info.height)
+
+    def _normalize_device_name(self, value: str | int) -> str:
+        name = str(value).strip()
+        if not name:
+            return "camera"
+        name = name.lstrip("/")
+        for ch in "/\\: ":
+            name = name.replace(ch, "_")
+        return name
 
     def destroy_node(self) -> None:
         if self.cap.isOpened():
