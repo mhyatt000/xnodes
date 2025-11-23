@@ -87,18 +87,26 @@ class AprilTagDetection:
 
 @dataclass
 class AprilConfig:
-    topic: str  # base topic for camera info and images ie: /video0
+    sub: str  # base topic for camera info and images ie: /video0
     tag_id: int = 0
-    tag_size: float = 9.0  # in inches
+    size_in: float | None = 9.0  # in inches
+    size_mm: float | None = None  # in millimeters
     family: str = "DICT_APRILTAG_36h11"
 
     refine_corners: bool = True
     to_camlink: bool = False
     camera_frame: str = "camera_optical"
 
+    def __post_init__(self):
+        # only one of size can be set
+        assert (self.size_in is None) != (self.size_mm is None), "set only one of size_in or size_mm"
+        assert self.size_in is not None or self.size_mm is not None, "one of size_in or size_mm must be set"
+
     @property
     def tag_size_m(self) -> None:
         """Convert tag_size from inches to meters."""
+        if self.size_mm is not None:
+            return self.size_mm * 0.001
         return self.tag_size * 0.0254
 
 
@@ -179,14 +187,14 @@ class AprilTagNode(Node):
         self.cfg = cfg
         self._detector = AprilTagDetector(self.cfg)
 
-        topic = lambda *p: "/" + osp.join(cfg.topic, *p)
+        topic = lambda *p: "/" + osp.join(cfg.sub, *p)
         qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
         self._camera_sub = self.create_subscription(CameraInfo, topic("camera_info"), self._camera_info_cb, qos)
         self._image_sub = self.create_subscription(Image, topic("image_raw"), self._image_cb, qos)
         self._pose_pub = self.create_publisher(PoseStamped, "apriltag_pose", qos)
         self._pose_camlink_pub = self.create_publisher(PoseStamped, "apriltag_pose_camlink", qos)
 
-        topic = lambda *p: "/" + osp.join("april", cfg.topic, *p)
+        topic = lambda *p: "/" + osp.join("april", cfg.sub, *p)
         self.pub_pose = self.create_publisher(PoseStamped, topic("tag_pose"), qos)
         self.pub_mark = self.create_publisher(MarkerArray, topic("tag_markers"), 10)
 
