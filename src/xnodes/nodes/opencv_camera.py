@@ -52,14 +52,16 @@ class OpenCVCameraNode(Node):
         if cfg is None:
             self.video_device = self.declare_parameter("video_device", "/dev/video0").value
             self.video_id = int(self.declare_parameter("video_id", -1).value)
-            image_size = self.declare_parameter("image_size", [640, 480]).value
             self.encoding = self.declare_parameter("output_encoding", "bgr8").value
             self.camera_name = self.declare_parameter("camera_name", "camera").value
             self.frame_id = self.declare_parameter("frame_id", f"{self.camera_name}_optical_frame").value
             self.fps = float(self.declare_parameter("fps", 30.0).value)
             self.camera_info_url = self.declare_parameter("camera_info_url", "").value
 
-        self.width, self.height = self._parse_image_size(image_size)
+            self.width = self.declare_parameter("width", 640).value
+            self.height = self.declare_parameter("height", 480).value
+
+        # self.width, self.height = self._parse_image_size(image_size)
 
         device = self.video_device if self.video_id < 0 else self.video_id
 
@@ -81,8 +83,9 @@ class OpenCVCameraNode(Node):
         self.cap = self._open_camera(self.cfg.device)
         self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.width))
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.height))
+        if self.width > 0 and self.height > 0:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.width))
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.height))
         if self.fps > 0:
             self.cap.set(cv2.CAP_PROP_FPS, float(self.fps))
 
@@ -185,6 +188,8 @@ class OpenCVCameraNode(Node):
     def _ensure_size(self, frame):
         h, w = frame.shape[:2]
         if w == self.width and h == self.height:
+            return frame
+        if self.width <= 0 or self.height <= 0:
             return frame
         return cv2.resize(frame, (self.width, self.height))
 
