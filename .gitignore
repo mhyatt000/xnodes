@@ -1,3 +1,4 @@
+*.pnm
 *.npy
 *.pdf
 *.json
