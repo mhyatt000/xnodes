@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import cv2
 from cv_bridge import CvBridge
@@ -15,7 +16,7 @@ from rich import print
 from sensor_msgs.msg import Image
 import tyro
 
-from xnodes.chess_util import arr2poses, mat2quat, timeit
+from xnodes.chess_util import arr2poses, mat2quat
 
 
 @dataclass
@@ -48,7 +49,7 @@ def _pose_features(rvecs: list[np.ndarray], tvecs: list[np.ndarray]) -> np.ndarr
     return feats
 
 
-def plot_pose_pca(rvecs, tvecs, title: str = "Pose PCA (PC1 vs PC2)"):
+def plot_pose_pca(rvecs, tvecs, fig=None, ax=None, title="Pose PCA"):
     """
     rvecs, tvecs: lists of (3,1) or (3,) arrays from calibrateCamera.
 
@@ -75,27 +76,44 @@ def plot_pose_pca(rvecs, tvecs, title: str = "Pose PCA (PC1 vs PC2)"):
     x = Z[:, 0]
     y = Z[:, 1]
 
-    plt.figure()
-    plt.scatter(x, y)
+    ax.clear()
+    ax.scatter(x, y)
     # annotate with indices for debugging / view id
     for i in range(m):
         plt.text(x[i], y[i], str(i), fontsize=8, ha="center", va="center")
 
-    plt.xlabel("PC1")
-    plt.ylabel("PC2")
-    plt.title(title)
-    plt.axis("equal")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.pause(0.1)
-    plt.clf()
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title(title)
+    # plt.axis("equal")
+    # plt.grid(True)
+    # plt.tight_layout()
+    # plt.pause(0.1)
+    # plt.clf()
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+    plt.pause(0.01)
 
 
 class Chess(Node):
-    def __init__(self, cfg: ChessConfig):
+    def __init__(self, cfg: ChessConfig | None = None):
         super().__init__("chess_calibrator")
+
+        if cfg is None:
+            cfg = ChessConfig(
+                sub=self.declare_parameter("sub", "/camera/image_raw").value,
+                board=self.declare_parameter("board", [9, 6]).value,
+                square_size=self.declare_parameter("square_size", 22.5).value,
+                n=self.declare_parameter("n", 15).value,
+                show=self.declare_parameter("show", False).value,
+                use_sb=self.declare_parameter("use_sb", True).value,
+            )
         self.cfg = cfg
+
         self.bridge = CvBridge()
+
+        self.name = cfg.sub.split("/")[-2]  # assume namespace is camera name
+        self.info_path = Path().home().resolve() / ".xnodes" / "camera_info" / f"{self.name}.yaml"
 
         # OpenCV expects inner-corner grid size: (cols, rows)
         self.pattern_size: tuple[int, int] = (cfg.board[0], cfg.board[1])
@@ -124,11 +142,13 @@ class Chess(Node):
         self.sub = self.create_subscription(Image, cfg.sub, self._on_image, qos)
         self.mypub = self.create_publisher(PoseArray, "chess", 10)
 
+        if self.cfg.show:
+            self.fig, self.ax = plt.subplots()  # create exactly one figure
+
         self.get_logger().info(
             f"Chess listening on {cfg.sub} for {self.pattern_size} inner corners; targeting {self.cfg.n} views"
         )
 
-    @timeit
     def _find_corners(self, gray):
         flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
         if self.cfg.use_sb and hasattr(cv2, "findChessboardCornersSB"):
@@ -149,7 +169,6 @@ class Chess(Node):
                 )
             return ok, corners
 
-    @timeit
     def _on_image(self, msg: Image):
         try:
             cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
@@ -182,7 +201,6 @@ class Chess(Node):
             cv2.imshow("chess", vis)
             cv2.waitKey(1)
 
-    @timeit
     def _select_views_by_spread(
         self,
         rvecs: list[np.ndarray],
@@ -228,7 +246,6 @@ class Chess(Node):
         selected.sort()
         return selected
 
-    @timeit
     def _try_calibrate(self):
         if self.image_size is None or not self.imgpoints:
             return
@@ -256,13 +273,21 @@ class Chess(Node):
         print(K)
 
         # Optional: save to YAML
-        fs = cv2.FileStorage("camera_calib.yaml", cv2.FILE_STORAGE_WRITE)
-        fs.write("K", K)
-        fs.write("dist", dist)
+        fs = cv2.FileStorage(self.info_path, cv2.FILE_STORAGE_WRITE)
         fs.write("image_width", int(self.image_size[0]))
         fs.write("image_height", int(self.image_size[1]))
+        fs.write("camera_matrix", K)
+        fs.write("distortion_coefficients", dist)
+        fs.write("distortion_model", "plumb_bob")
+        fs.write("camera_name", self.name)
+        R_identity = np.eye(3, dtype=np.float64)
+        fs.write("rectification_matrix", R_identity)
+        P = np.zeros((3, 4), dtype=np.float64)
+        P[:, :3] = K
+        fs.write("projection_matrix", P)
+
         fs.release()
-        self.get_logger().info("wrote camera_calib.yaml")
+        self.get_logger().info(f"wrote {self.info_path}")
 
         # Example board points in camera frame for first view
         if rvecs and tvecs:
@@ -275,7 +300,8 @@ class Chess(Node):
 
         # Now, run PCA selection on all views and keep only the most "spread" ones
         if rvecs and tvecs:
-            plot_pose_pca(rvecs, tvecs, title="Before PCA Selection")
+            if self.cfg.show:
+                plot_pose_pca(rvecs, tvecs, self.fig, self.ax)
             keep_idx = self._select_views_by_spread(rvecs, tvecs)
             old_n = len(self.imgpoints)
             self.objpoints = [self.objpoints[i] for i in keep_idx]
@@ -288,8 +314,7 @@ class Chess(Node):
         super().destroy_node()
 
 
-def main():
-    cfg = tyro.cli(ChessConfig)
+def run(cfg: ChessConfig | None = None):
     rclpy.init()
     node = Chess(cfg)
     try:
@@ -303,5 +328,9 @@ def main():
         rclpy.shutdown()
 
 
-if __name__ == "__main__":
-    main()
+def main(cfg: ChessConfig):
+    run(cfg)
+
+
+if __name__ == "__main__":  # pragma: no cover - script entry
+    main(tyro.cli(ChessConfig))
