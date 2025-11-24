@@ -7,7 +7,7 @@ name = "xnodes"
 version = "0.1.0"
 description = "ROS2 nodes for cameras and AprilTags"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "rclpy",
     "sensor_msgs",

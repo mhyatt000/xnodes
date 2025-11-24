@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from glob import glob
 import os
+from pathlib import Path
 
 from setuptools import find_packages, setup
 
@@ -24,10 +25,9 @@ launch_files = files(
     "launch/**/*.xml",
 )
 
-config_files = [
-    "config/stereo_anchor.yaml",
-]
-
+# rglob all config files
+configs = Path("config").rglob("*.yaml")
+config_files = [str(p) for p in configs if p.is_file()]
 
 setup(
     name=package_name,
@@ -48,8 +48,10 @@ setup(
         "console_scripts": [
             # add your nodes here
             # "apriltag_node = xnodes.apriltag:main",
-            "stereo_anchor_node = xnodes.nodes.stereo_anchor_node:run",
-            "opencv_camera_node = xnodes.nodes.opencv_camera:run",
+            "stereo = xnodes.nodes.stereo_anchor_node:run",
+            "cam = xnodes.nodes.opencv_camera:run",
+            "intr = xnodes.nodes.chess:run",
+            "april = xnodes.nodes.april_grid:run",
         ],
     },
 )
