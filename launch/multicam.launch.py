@@ -27,7 +27,9 @@ def generate_launch_description():
     nodes = []
 
     root = Path(os.environ["PIXI_PROJECT_ROOT"])
-    params_file = root / "config" / "cam.yaml"
+    # params_file = root / "config" / "cam.yaml"
+    # usb_cam/config/params.yaml
+    config = Path().home().resolve() / ".xnodes"
 
     for i, dev in enumerate(cam_links):
         name = dev.name.replace("cam_", "")
@@ -40,13 +42,13 @@ def generate_launch_description():
                 name=f"{name}_camera",
                 namespace=name,
                 parameters=[
-                    params_file,
+                    # params_file,
                     {
                         "output_encoding": "rgb8",
                         "video_device": str(dev),
                         "image_size": [640, 480],
                         "frame_id": f"{name}_optical_frame",
-                        "camera_info_url": f"file://{root}/config/camera_info/{name}.yaml",
+                        "camera_info_url": f"file://{config}/camera_info/{name}.yaml",
                         "camera_name": name,
                         # "framerate": fps,
                     },
