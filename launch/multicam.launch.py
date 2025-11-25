@@ -18,7 +18,9 @@ def generate_launch_description():
     # description="Frames per second for the camera",
     # )
 
-    cam_links = sorted(Path("/dev").glob("cam*"))
+    _links = Path().home() / ".xnodes" / "dev"
+    cam_links = sorted(_links.glob("cam*"))
+    print(_links, cam_links)
     if not cam_links:
         raise RuntimeError("No /dev/cam* symlinks found")
 
