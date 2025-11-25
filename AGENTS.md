@@ -67,3 +67,13 @@ Namespaces are one honking great idea -- let's do more of those!
   * not tyro.cli(main)
 * in ros node files, use `def run` as entrypoint for `ros2 run` and `def main`
   as entry point for `python file.py` (quick debug)
+
+# ROS2 STYLEGUIDE
+
+independent nodes should implement run fn as ros2 entrypoint and main as python entrypoint. main uses main(tyro.cli(cfg))
+the node will optionally accept cfg | None and define the right parameters if cfg is None
+when deciding a new topic to publish it should scrape the topic prefix from its subscribers. often this means something like
+ie:
+* it will republish the new item to ...name.../depth/image_raw topic where name is scraped from the --sub topic argument which is passed.
+
+look at the other nodes in src/xnodes/nodes for syntax help
