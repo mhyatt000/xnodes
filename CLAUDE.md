@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+look in docs repo for task specifications, design docs, and coding conventions.
 
 ## What is xnodes
 
