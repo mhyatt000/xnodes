@@ -34,7 +34,7 @@ One-liners for each docs file:
 - `docs/TYRO.md` - Dataclass + Tyro CLI style guide (field comments inline, `main(tyro.cli(Config))` pattern).
 - `docs/ZEN.md` - The Zen of Python principles used as style and design heuristics.
 - `docs/batch.md` - Canonical nested batch spec example (action/observation/task shapes and pad masks).
-- `docs/install.md` - Installation policy: use `uv`/`uv run` as the project-standard workflow.
+- `docs/install.md` - Installation policy: build via `colcon` in `~/ws`; never use pip/uv/conda.
 - `docs/antipattern/broad_except.md` - Why broad `except` is harmful and how to catch specific exceptions.
 - `docs/antipattern/import.md` - Avoid hiding import errors with try/except fallback stubs; fail explicitly on missing deps.
 - `docs/antipattern/node_business_logic_coupling.md` - Keep ROS nodes thin; move decision logic into testable services/policies.
@@ -43,15 +43,14 @@ One-liners for each docs file:
 
 A ROS 2 Python package for spatial perception and camera calibration. Provides nodes for AprilTag detection, stereo camera anchoring, checkerboard calibration, and fiducial visualization. Targets ROS 2 Humble+ on Python 3.11.
 
+This package lives at `~/ws/src/xnodes` and is built inside the ROS 2 workspace at `~/ws`. Dependencies are declared in `package.xml` and resolved by the workspace — do not use `pip`, `uv`, or `conda` to manage dependencies.
+
 ## Build & Run
 
 ```bash
-# ROS workspace build
+# ROS workspace build (from ~/ws)
 colcon build --packages-select xnodes
 source install/setup.bash
-
-# Standalone dev install
-pip install -e .
 
 # Launch
 ros2 launch xnodes multicam.launch.py

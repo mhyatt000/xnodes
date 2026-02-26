@@ -1,5 +1,11 @@
 # Installation
 
-This project uses `uv` as the first-class package manager for Python dependencies. Never use `pip` or `conda` for dependency management here.
+This package is part of the ROS 2 workspace at `~/ws`. Build and install via colcon:
 
-We use `uv run` not `python` to access the env.
+```bash
+cd ~/ws
+colcon build --packages-select xnodes
+source install/setup.bash
+```
+
+Dependencies are declared in `package.xml` and resolved by the workspace (rosdep / apt / existing workspace packages). Do not use `pip`, `uv`, or `conda` to manage dependencies for this package.

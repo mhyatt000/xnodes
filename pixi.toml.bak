@@ -14,6 +14,7 @@ pytest = ">=9.0.2,<10"
 rich = ">=14.3.3,<15"
 tyro = ">=1.0.7,<2"
 ruff = ">=0.15.2,<0.16"
+pip = ">=26.0.1,<27"
 
 [pypi-dependencies]
 webpolicy = { git = "https://github.com/mhyatt000/webpolicy.git", rev = "master" }
