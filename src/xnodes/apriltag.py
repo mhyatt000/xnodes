@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import os.path as osp
 
 from builtin_interfaces.msg import Time
-import cv2 as cv
+import cv2
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point, PoseStamped
 import numpy as np
@@ -23,7 +23,7 @@ T_OPT2CAMLINK[:3, :3] = R_OPT2CAMLINK
 
 
 def _rvec_tvec_to_T(rvec: np.ndarray, tvec: np.ndarray) -> np.ndarray:
-    R, _ = cv.Rodrigues(rvec)
+    R, _ = cv2.Rodrigues(rvec)
     T = np.eye(4, dtype=float)
     T[:3, :3] = R
     T[:3, 3] = tvec.reshape(3)
@@ -121,13 +121,13 @@ class AprilTagDetector:
         self._detector = self._build_detector(self.cfg.family)
 
     @staticmethod
-    def _build_detector(family: str) -> cv.aruco.ArucoDetector:
-        if not hasattr(cv.aruco, family):
+    def _build_detector(family: str) -> cv2.aruco.ArucoDetector:
+        if not hasattr(cv2.aruco, family):
             raise ValueError(f"OpenCV aruco missing {family} (need opencv-contrib ≥ 4.7)")
-        dictionary = getattr(cv.aruco, family)
-        aruco_dict = cv.aruco.getPredefinedDictionary(dictionary)
-        params = cv.aruco.DetectorParameters()
-        return cv.aruco.ArucoDetector(aruco_dict, params)
+        dictionary = getattr(cv2.aruco, family)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(dictionary)
+        params = cv2.aruco.DetectorParameters()
+        return cv2.aruco.ArucoDetector(aruco_dict, params)
 
     def set_camera_info(self, msg: CameraInfo) -> None:
         self.K = np.array(msg.k, dtype=float).reshape(3, 3)
@@ -149,13 +149,13 @@ class AprilTagDetector:
         if self.cfg.refine_corners:
             win = (5, 5)
             zero_zone = (-1, -1)
-            term = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.01)
-            cv.cornerSubPix(image, pts, win, zero_zone, term)
+            term = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
+            cv2.cornerSubPix(image, pts, win, zero_zone, term)
 
         s = self.cfg.tag_size_m / 2.0
         obj = np.array([[-s, s, 0.0], [s, s, 0.0], [s, -s, 0.0], [-s, -s, 0.0]], dtype=float)
 
-        ok, rvec, tvec = cv.solvePnP(obj, pts, self.K, self.dist, flags=cv.SOLVEPNP_ITERATIVE)
+        ok, rvec, tvec = cv2.solvePnP(obj, pts, self.K, self.dist, flags=cv2.SOLVEPNP_ITERATIVE)
         if not ok:
             raise RuntimeError("solvePnP failed")
 
@@ -279,6 +279,10 @@ class AprilTagNode(Node):
         pose.pose.orientation.z = float(qz)
         pose.pose.orientation.w = float(qw)
         return pose
+
+
+def run(cfg: AprilConfig | None = None):
+    pass
 
 
 def main(cfg: AprilConfig):
