@@ -1,0 +1,15 @@
+[workspace]
+authors = ["Matt Hyatt <mhyatt000@gmail.com>"]
+channels = ["conda-forge"]
+name = "xnodes"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.11.*"
+numpy = ">=2.4.2,<3"
+pytest = ">=9.0.2,<10"
+rich = ">=14.3.3,<15"
+tyro = ">=1.0.7,<2"
