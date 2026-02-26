@@ -11,11 +11,11 @@ from gello.zmq_core.robot_node import ZMQClientRobot
 import numpy as np
 import rclpy
 from std_msgs.msg import Float32MultiArray
-from xgym.nodes.base import Base
 
 # from gello.agents.agent import BimanualAgent, DummyAgent
 # from gello.data_utils.format_obs import save_frame
 # from gello.robots.robot import PrintRobot
+from .base import Base
 
 
 def print_color(*args, color=None, attrs=(), **kwargs):

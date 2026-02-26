@@ -3,9 +3,9 @@ from __future__ import annotations
 import rclpy
 from rich.pretty import pprint
 from std_msgs.msg import Float32MultiArray
-from xgym.controllers import SpaceMouseController
 
 from .base import Base
+from .controllers import SpaceMouseController
 
 
 class SpaceMouse(Base):

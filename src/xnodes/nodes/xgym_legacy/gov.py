@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import time
 
+import rclpy
 from rich.pretty import pprint
 from std_msgs.msg import Bool, Int32MultiArray
-from xgym.nodes.base import Base
+import tyro
+
+from .base import Base
 
 
 def delete_latest_files(path: Path):
@@ -60,11 +64,30 @@ class Governor(Base):
 
 
 class ModelGovernor(Governor):
-    def __init__(self):
-        super().__init__("model_governor")
+    def __init__(self, cfg):
+        super().__init__(cfg=cfg)
 
 
 class ReplayGovernor(Governor):
-    def __init__(self):
-        super().__init__("model_governor")
+    def __init__(self, cfg):
+        super().__init__(cfg=cfg)
         # TODO use space mouse to control video scrubbing ?
+
+
+@dataclass
+class GovConfig:
+    dir: Path = Path(".")
+
+
+def main(cfg: GovConfig):
+    rclpy.init(args=None)
+    node = Governor(cfg=cfg)
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main(tyro.cli(GovConfig))

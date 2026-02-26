@@ -401,5 +401,11 @@ def main(cfg: ModelClientConfig):
         rclpy.shutdown()
 
 
+def run(cfg: ModelClientConfig | None = None):
+    if cfg is None:
+        cfg = tyro.cli(ModelClientConfig)
+    main(cfg)
+
+
 if __name__ == "__main__":
-    main(tyro.parse(ModelClientConfig))
+    run()

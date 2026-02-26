@@ -8,6 +8,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
+import tyro
 
 
 class Camera(Node):
@@ -85,4 +86,4 @@ def main(cfg: CameraConfig):
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(CameraConfig))

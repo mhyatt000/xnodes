@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -10,8 +11,13 @@ import rclpy
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float32MultiArray
+import tyro
 from xarm_msgs.msg import RobotMsg
-import xgym
+
+try:
+    import xgym
+except ImportError:
+    xgym = None
 
 from .base import Base
 
@@ -195,14 +201,39 @@ class Writer(Base):
         self.get_logger().info(f"Reading from {self.path}")
         if not msg.data:
             return
+        if xgym is None:
+            self.get_logger().warning("xgym is not installed; replay is unavailable")
+            return
 
         _info, data = xgym.viz.memmap.read(self.path)
         xgym.viz.memmap.view(data)
 
+    def save_data(self):
+        if hasattr(self, "memap"):
+            self.memap.flush()
+        if hasattr(self, "path"):
+            with open(str(self.path).replace(".dat", ".json"), "w") as f:
+                data = {
+                    "schema": self.schema,
+                    "info": {
+                        "hz": self.hz,
+                        "len": self.datai,
+                        "maxlen": self.nrecord,
+                        "path": str(self.path),
+                    },
+                }
+                json.dump(data, f)
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = Writer()
+
+@dataclass
+class WriterConfig:
+    seconds: int = 15
+    dir: str = "."
+
+
+def main(cfg: WriterConfig):
+    rclpy.init(args=None)
+    node = Writer(seconds=cfg.seconds, dir=cfg.dir)
 
     try:
         rclpy.spin(node)  # Keeps the node running
@@ -215,4 +246,4 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(WriterConfig))

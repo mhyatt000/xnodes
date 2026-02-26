@@ -10,6 +10,7 @@ import numpy as np
 import rclpy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
+import tyro
 from xarm.wrapper import XArmAPI
 from xarm_msgs.msg import RobotMsg
 
@@ -109,7 +110,7 @@ class AccelConfigFactory:
     Kd: float = 40.0
 
     def create(self, hz: float) -> Accelerator:
-        dt: float = 1 / self.hz
+        dt: float = 1 / hz
         return Accelerator(dt=dt, A_max=self.A_max, Kp=self.Kp, Kd=self.Kd)
 
 
@@ -120,6 +121,7 @@ class RobotConfig:
 
     input: InputMode = InputMode.GELLO
     ctrl: ControlMode = ControlMode.JOINT  # controller details
+    use_gripper: bool = True
 
     hz: int = 200  # command frequency
     grip_hz: int = 50  # gripper frequency
@@ -590,9 +592,9 @@ class Xarm(Base):
             time.sleep(0.1)
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = RobotNode()
+def main(cfg: RobotConfig):
+    rclpy.init(args=None)
+    node = Xarm(cfg=cfg)
 
     try:
         rclpy.spin(node)
@@ -604,4 +606,4 @@ def main(args=None):
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(RobotConfig))

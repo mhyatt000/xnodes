@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import threading
 
 from evdev import ecodes, InputDevice
 import numpy as np
 import rclpy
 from std_msgs.msg import Int32MultiArray
-from xgym.nodes.base import Base
+import tyro
+
+from .base import Base
 
 
 class FootPedal(Base):
-    def __init__(self, path="/dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd"):
+    def __init__(self, path: str = "/dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd"):
         super().__init__("foot_pedal")
         self.pub = self.create_publisher(Int32MultiArray, "/xgym/pedal", 10)
 
@@ -51,25 +54,20 @@ class FootPedal(Base):
         return {0: "released", 1: "pressed", 2: "held"}.get(val, f"unknown({val})")
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = FootPedalPublisher()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+@dataclass
+class FootPedalConfig:
+    path: str = "/dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd"
+
+
+def main(path: str):
+    rclpy.init(args=None)
+    node = FootPedal(path=path)
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    main()
-
-
-def main(args=None):
-    rclpy.init(args=args)
-    node = FootPedalPublisher()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
-
-
-if __name__ == "__main__":
-    main()
+    main(tyro.cli(FootPedalConfig).path)
