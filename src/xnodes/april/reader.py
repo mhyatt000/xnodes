@@ -53,3 +53,15 @@ class AprilGridConfig(CalibrationTarget):
     def center_spacing(self) -> float:
         """Distance between neighboring tag centers [m]."""
         return self.tagSize * (1.0 + self.tagSpacing)
+
+    @classmethod
+    def create(cls):
+        data = {
+            "target_type": "aprilgrid",  # gridtype
+            "tagCols": 6,  # number of apriltags
+            "tagRows": 4,  # number of apriltags
+            "tagSize": 0.03,  # size of apriltag, edge to edge [m]
+            "tagSpacing": 0.0,  # ratio of space between tags to tagSize
+            "codeOffset": 0,  # code offset for the first tag in the aprilboard
+        }
+        return cls.model_validate(data)

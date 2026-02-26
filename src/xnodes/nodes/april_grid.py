@@ -1,30 +1,25 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 from cv_bridge import CvBridge
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import PoseArray, TransformStamped
 import numpy as np
 from pupil_apriltags import Detector
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from reader import AprilGridConfig, CalibrationTarget
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, QoSReliabilityPolicy
 from rich import print
-from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import Image
 from tf2_ros import TransformBroadcaster
 import tyro
 
-from xnodes.april.det import detect_aprilgrid, make_apriltag_detector, project_points
-
-
-def mat2quat(T):
-    # T: 4x4
-    return R.from_matrix(T[:3, :3]).as_quat()  # returns [x, y, z, w]
-
+from xnodes.april.det import _corners_3d_from_pose, detect_aprilgrid, make_apriltag_detector, project_points
+from xnodes.april.reader import AprilGridConfig, CalibrationTarget
+from xnodes.chess_util import arr2poses, mat2quat
 
 d = Path(__file__).parent.resolve()
 
@@ -36,10 +31,17 @@ class Config:
     show: bool = False  # Whether to show debug image
     invert: bool = False  # Whether to invert transform
     id: int | None = None  # If set, only publish this tag ID
+    smooth: float = 0.0  # Exponential smoothing factor for pose
+
+    size_in: float | None = None
 
     def __post_init__(self):
         if self.invert:
             assert self.id is not None, "If invert is set, id must be set"
+
+    @property
+    def square_size_in2m(self) -> float:
+        return self.size_in * 0.0254  # inches to meters
 
 
 def _tag_center_T_grid(row: int, col: int, cfg: AprilGridConfig) -> np.ndarray:
@@ -69,7 +71,12 @@ class AprilGridDetector(Node):
         # --- grid config: from arg if present, else from ROS param ---
         if cfg is not None:
             self.cfg = cfg
-            april = AprilGridConfig.load(str(cfg.path))
+            # april = AprilGridConfig.load(str(cfg.path))
+            april = AprilGridConfig.create()
+            if self.cfg.size_in:
+                april.tagSize = cfg.square_size_in2m
+
+            print(april)
             self.april = april
         else:
             self.declare_parameter("grid_yaml", "")
@@ -103,6 +110,26 @@ class AprilGridDetector(Node):
             self.cb_image,
             qos_profile_sensor_data,
         )
+
+        qos = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.BEST_EFFORT)
+        self.pubs = {
+            "corners": self.create_publisher(PoseArray, f"{self.name}/aprilgrid/corners", qos),
+            # 'markers': self.create_publisher(PoseArray, f"{self.name}/aprilgrid/markers", qos),
+        }
+
+        if self.cfg.smooth > 0.0:
+            from xnodes.core.quaternion import PoseSmootherXYZ, SlerpSmoother
+
+            def _make_pose_smoother():
+                return PoseSmootherXYZ(alpha=self.cfg.smooth)
+
+            def _make_slerp_smoother():
+                return SlerpSmoother(alpha=self.cfg.smooth)
+
+            self.smooth = {
+                "pose": defaultdict(_make_pose_smoother),
+                "quat": defaultdict(_make_slerp_smoother),
+            }
 
         self.bst = TransformBroadcaster(self)
         self.get_logger().info(f"aprilgrid shim listening on {sub} for grid {self.april.tagRows}x{self.april.tagCols}")
@@ -192,7 +219,6 @@ class AprilGridDetector(Node):
         # For each visible tag, compute T_cam_tag and publish TF
         Ts = []
         for obs, d in zip(tag_obs, detections):
-            print(d.tag_id)
             # d.pose_R, d.pose_t
             T_cam_tag = np.eye(4, dtype=np.float32)
             T_cam_tag[:3, :3] = d.pose_R
@@ -206,21 +232,33 @@ class AprilGridDetector(Node):
 
             T = TransformStamped()
             T.header.stamp = self.get_clock().now().to_msg()
-            parent, child = self.name, f"tag_{obs.tag_id}"
-            if obs.tag_id != self.cfg.id:
-                print("Tag ID mismatch")
+            parent, child = f"{self.name}_optical_frame", f"{self.name}_tag_{obs.tag_id}"
+            if self.cfg.id is not None and obs.tag_id != self.cfg.id:
+                # print("Tag ID mismatch")
                 continue
-            parent, child = child, parent if self.cfg.invert else (parent, child)
+
+            if self.cfg.invert:
+                parent, child = child, parent
+                myT = np.linalg.inv(T_cam_tag)
+            else:
+                myT = T_cam_tag
+
             T.header.frame_id = parent
             T.child_frame_id = child
 
-            T.transform.translation.x = float(T_cam_tag[0, 3])
-            T.transform.translation.y = float(T_cam_tag[1, 3])
-            T.transform.translation.z = float(T_cam_tag[2, 3])
+            t = myT[:3, 3]
+            if self.cfg.smooth > 0.0:
+                t = self.smooth["pose"][obs.tag_id].update(t)
+            T.transform.translation.x = float(t[0])
+            T.transform.translation.y = float(t[1])
+            T.transform.translation.z = float(t[2])
 
             # print(T.transform.translation)
 
-            q = mat2quat(T_cam_tag)
+            q = mat2quat(myT)
+            if self.cfg.smooth > 0.0:
+                q = self.smooth["quat"][obs.tag_id].update(q)
+
             T.transform.rotation.x = float(q[0])
             T.transform.rotation.y = float(q[1])
             T.transform.rotation.z = float(q[2])
@@ -244,6 +282,30 @@ class AprilGridDetector(Node):
                 # )
 
             # in red, draw square around 3d projected to 2d for each pts3d
+            # using pupil-april det
+            for det in detections:
+                p3d = _corners_3d_from_pose(det.pose_R, det.pose_t, self.april.tagSize)
+                p2d_proj = project_points(self.K, p3d)
+                for i in range(4):
+                    pt1 = (int(p2d_proj[i][0]), int(p2d_proj[i][1]))
+                    pt2 = (int(p2d_proj[(i + 1) % 4][0]), int(p2d_proj[(i + 1) % 4][1]))
+                    cv2.line(img_color, pt1, pt2, (255, 0, 0), 2)
+                # plot axes now
+                cv2.drawFrameAxes(
+                    img_color,
+                    self.K,
+                    self.dist,
+                    cv2.Rodrigues(det.pose_R)[0],
+                    det.pose_t,
+                    axis_len := self.april.tagSize,
+                )
+
+                print(p3d)
+                poses = arr2poses(p3d)
+                poses.header = msg.header
+                print(poses)
+                self.pubs["corners"].publish(poses)
+
             # using project_points(K, pts3d)
             allp = []
             for obs in tag_obs:
@@ -279,7 +341,7 @@ class AprilGridDetector(Node):
                     # (int(p2d_proj[0][0]), int(p2d_proj[0][1])), (int(p2d_proj[2][0]),
 
         if self.cfg.show:
-            cv2.imshow("detections", img_color)
+            cv2.imshow(f"detections on {self.name}", img_color)
             cv2.waitKey(1)
 
 

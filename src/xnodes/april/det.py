@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 import numpy as np
 from pupil_apriltags import Detector
-from reader import AprilGridConfig
 from rich import print
+
+from .reader import AprilGridConfig
 
 
 @dataclass
