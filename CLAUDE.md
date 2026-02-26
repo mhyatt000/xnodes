@@ -1,7 +1,43 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-look in docs repo for task specifications, design docs, and coding conventions.
+
+## docs
+
+Use `tree -a docs` for the local docs map:
+
+```text
+docs
+├── DESIGN.md
+├── PIXI.md
+├── PIXI_GH.md
+├── TYRO.md
+├── ZEN.md
+├── antipattern
+│   ├── broad_except.md
+│   ├── import.md
+│   └── node_business_logic_coupling.md
+├── api
+├── batch.md
+├── install.md
+└── test
+    ├── ml
+    │   ├── integration.md
+    │   └── unit.md
+    └── ros
+```
+
+One-liners for each docs file:
+- `docs/DESIGN.md` - Entry point for design decisions; links to antipattern guidance.
+- `docs/PIXI.md` - How to define and run Pixi tasks, with syntax, examples, and best practices.
+- `docs/PIXI_GH.md` - How to add GitHub-hosted Python dependencies to Pixi using PEP 508 refs.
+- `docs/TYRO.md` - Dataclass + Tyro CLI style guide (field comments inline, `main(tyro.cli(Config))` pattern).
+- `docs/ZEN.md` - The Zen of Python principles used as style and design heuristics.
+- `docs/batch.md` - Canonical nested batch spec example (action/observation/task shapes and pad masks).
+- `docs/install.md` - Installation policy: use `uv`/`uv run` as the project-standard workflow.
+- `docs/antipattern/broad_except.md` - Why broad `except` is harmful and how to catch specific exceptions.
+- `docs/antipattern/import.md` - Avoid hiding import errors with try/except fallback stubs; fail explicitly on missing deps.
+- `docs/antipattern/node_business_logic_coupling.md` - Keep ROS nodes thin; move decision logic into testable services/policies.
 
 ## What is xnodes
 
