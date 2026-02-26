@@ -1,0 +1,20 @@
+/video0/**:
+  ros__parameters:
+    video_device: "/dev/video0"
+    framerate: 30.0
+    frame_id: video0
+    camera_info_url: "file:///root/.ros2/camera_info/video0.yaml"
+
+/video6/camera_info:
+  ros__parameters:
+    video_device: "/dev/video6"
+    framerate: 30.0
+    frame_id: video6
+    camera_info_url: "file:///root/.ros2/camera_info/video6.yaml"
+
+/video8/**:
+  ros__parameters:
+    video_device: "/dev/video8"
+    framerate: 30.0
+    frame_id: video8
+    camera_info_url: "file:///root/.ros2/camera_info/video8.yaml"
