@@ -52,6 +52,8 @@ setup(
             "cam = xnodes.nodes.opencv_camera:run",
             "intr = xnodes.nodes.chess:run",
             "april = xnodes.nodes.april_grid:run",
+            "keyboard = xnodes.nodes.ctrl.keyboard:run",
+            "model = xnodes.nodes.legacy.model:run",
         ],
     },
 )
