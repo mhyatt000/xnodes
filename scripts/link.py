@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Create stable local camera symlinks from detected V4L device mappings."""
+
 from __future__ import annotations
 
 import dataclasses
