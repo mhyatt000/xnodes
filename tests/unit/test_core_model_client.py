@@ -77,3 +77,35 @@ def test_extract_action_targets_resolution_and_errors():
 def test_gaussian_conv_rejects_even_kernel():
     with pytest.raises(ValueError, match="kernel_size must be odd"):
         GaussianConv(kernel_size=4)
+
+
+def test_gaussian_conv_batch_smoothing_matches_expected():
+    conv = GaussianConv(kernel_size=3, std=1.0)
+    arr = np.array([0.0, 10.0, 0.0], dtype=np.float64)
+
+    out = conv(arr)
+
+    a = float(np.exp(-0.5))
+    expected = np.array(
+        [
+            (10.0 * a) / (1.0 + a),
+            10.0 / (1.0 + 2.0 * a),
+            (10.0 * a) / (1.0 + a),
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(out, expected, rtol=1e-7, atol=1e-7)
+
+
+def test_gaussian_conv_scalar_stream_matches_batch_prefix():
+    seq = [1.0, 2.0, 3.0, 4.0]
+    conv = GaussianConv(kernel_size=5, std=1.0)
+    streamed = [conv(x) for x in seq]
+
+    expected = []
+    for i in range(1, len(seq) + 1):
+        prefix = np.array(seq[:i], dtype=np.float64)
+        batch_out = np.atleast_1d(GaussianConv(kernel_size=5, std=1.0)(prefix))
+        expected.append(float(batch_out[-1]))
+
+    np.testing.assert_allclose(streamed, expected, rtol=1e-7, atol=1e-7)
