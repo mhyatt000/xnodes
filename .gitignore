@@ -1,3 +1,5 @@
+install/
+log/
 *.pnm
 *.npy
 *.pdf
