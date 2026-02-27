@@ -6,10 +6,9 @@ from typing import Any
 
 import numpy as np
 import rclpy
-from rich.pretty import pprint
+from rich import print
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
-import tyro
 from webpolicy.client import Client
 from xarm_msgs.msg import RobotMsg
 
@@ -23,8 +22,7 @@ from xnodes.core.model_client import (
     ModelClientConfig,
     NOMODEL,
 )
-
-from .base import Base
+from xnodes.nodes.legacy.base import Base
 
 np.set_printoptions(suppress=True)  # no scientific notation
 
@@ -33,15 +31,9 @@ __all__ = [  # bwd compatibility
     "ActionRepresentation",
     "Model",
     "ModelClientConfig",
-    "MyClient",
     "main",
     "run",
 ]
-
-
-class MyClient(Client):
-    def reset(self):
-        self.step({"reset": True})
 
 
 class Model(Base):
@@ -62,13 +54,13 @@ class Model(Base):
         self.data: dict[str, np.ndarray] = {}
         self.build_cam_subs()
 
-        self.policy = MyClient(host=cfg.host, port=cfg.port)
-        self.policy.reset()
+        self.policy = Client(host=cfg.host, port=cfg.port)
+        # self.policy.reset()
         self._reset = True
 
         self.targets = None
 
-        self.get_logger().info("Model Client Initialized.")
+        self.logger.info("Model Client Initialized.")
 
         self.moveit_sub = self.create_subscription(JointState, "/xarm/joint_states", self.set_joints, 10)
         self.moveit_pose_sub = self.create_subscription(RobotMsg, "/xarm/robot_states", self.set_pose, 10)
@@ -84,6 +76,10 @@ class Model(Base):
 
         # self.ds = tfds.load("xgym_duck_single", split="train")
         # self.episode = self.ds.take(1)
+
+    @property
+    def logger(self):
+        return self.get_logger()
 
     def set_active(self, msg):
         super().set_active(msg)
@@ -127,6 +123,7 @@ class Model(Base):
         rate = 1.0 / self.req_hz
         while not self._stop_event.is_set():
             tic = time.time()
+            self.logger.debug("step")
             self.step()
             toc = time.time()
             time.sleep(max(0, rate - (toc - tic)))
@@ -149,7 +146,7 @@ class Model(Base):
         imgs = extract_camera_images(self.data)
         missing = missing_camera_images(imgs)
         if missing:
-            self.get_logger().info(f"Missing images: {missing}")
+            self.logger.info(f"Missing images: {missing}")
             return
 
         try:
@@ -161,14 +158,14 @@ class Model(Base):
                 ensemble=self.cfg.ensemble,
             )
         except ValueError as exc:
-            self.get_logger().info(f"Payload error: {exc}")
+            self.logger.info(f"Payload error: {exc}")
             return
 
         actions: dict[str, Any] = self.policy.step(payload)
         try:
             self.targets = extract_action_targets(actions, resolution=self.resolution)
         except (KeyError, TypeError, ValueError) as exc:
-            self.get_logger().info(f"Action parse error: {exc}")
+            self.logger.info(f"Action parse error: {exc}")
 
     def reset(self):
         self._reset = False  # send reset signal to thread
@@ -193,7 +190,7 @@ class Model(Base):
 
 
 def main(cfg: ModelClientConfig):
-    pprint(cfg)
+    print(cfg)
 
     args = None
     rclpy.init(args=args)
@@ -203,7 +200,7 @@ def main(cfg: ModelClientConfig):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info("Controller Node shutting down...")
+        node.logger.info("Controller Node shutting down...")
     finally:
         node.destroy_node()
         rclpy.shutdown()
@@ -211,7 +208,16 @@ def main(cfg: ModelClientConfig):
 
 def run(cfg: ModelClientConfig | None = None):
     if cfg is None:
-        cfg = tyro.cli(ModelClientConfig)
+        import sys
+
+        argv = sys.argv[1:]
+        if "--ros-args" in argv:
+            argv = argv[: argv.index("--ros-args")]
+            pairs = [(k, v) for k, v in zip(argv[::2], argv[1::2])]
+            kwargs = {k.lstrip("--").replace("-", "_"): v for k, v in pairs}
+            cfg = ModelClientConfig(**kwargs)
+            # cfg = ModelClientConfig()
+        # cfg = tyro.cli(ModelClientConfig, args=argv)
     main(cfg)
 
 
