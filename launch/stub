@@ -1,0 +1,36 @@
+#!/bin/python
+from __future__ import annotations
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import LaunchConfiguration
+
+
+def generate_launch_description() -> LaunchDescription:
+    spec = LaunchConfiguration("spec")
+    name = LaunchConfiguration("name")
+    rate_hz = LaunchConfiguration("rate_hz")
+
+    stub = ExecuteProcess(
+        cmd=[
+            "python3",
+            "-m",
+            "xnodes.nodes.debug.stub",
+            "--spec",
+            spec,
+            "--name",
+            name,
+            "--rate-hz",
+            rate_hz,
+        ],
+        output="screen",
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("spec", default_value="stub.yaml", description="Path to nested shape spec YAML"),
+            DeclareLaunchArgument("name", default_value="stub_node", description="ROS node name"),
+            DeclareLaunchArgument("rate_hz", default_value="1.0", description="Publish rate in Hz"),
+            stub,
+        ]
+    )
