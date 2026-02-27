@@ -1,0 +1,33 @@
+#!/bin/python
+from __future__ import annotations
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description() -> LaunchDescription:
+    host = LaunchConfiguration("host")
+    port = LaunchConfiguration("port")
+    rep = LaunchConfiguration("rep")
+    task = LaunchConfiguration("task")
+    ensemble = LaunchConfiguration("ensemble")
+
+    model = Node(
+        package="xnodes",
+        executable="model",
+        output="screen",
+        arguments=["--host", host, "--port", port, "--rep", rep, "--task", task, "--ensemble", ensemble],
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("host", default_value="none"),
+            DeclareLaunchArgument("port", default_value="8000"),
+            DeclareLaunchArgument("rep", default_value="REL", choices=["REL", "ABS"]),
+            DeclareLaunchArgument("task", default_value="none"),
+            DeclareLaunchArgument("ensemble", default_value="False"),
+            model,
+        ]
+    )
