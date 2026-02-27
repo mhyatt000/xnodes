@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
+import time
 
 from evdev import ecodes, InputDevice
 import numpy as np
@@ -39,6 +40,7 @@ class FootPedal(Base):
         """
 
         for event in self.device.read_loop():
+            time.sleep(0.02)  # Small delay to prevent CPU overuse and double tap
             if event.type == ecodes.EV_KEY and event.code in self.pmap:
                 p = self.pmap[event.code]
                 new = event.value  # 0=release, 1=press, 2=hold/repeat

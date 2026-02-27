@@ -1,0 +1,26 @@
+#!/bin/python
+from __future__ import annotations
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import LaunchConfiguration
+
+
+def generate_launch_description() -> LaunchDescription:
+    path = LaunchConfiguration("path")
+
+    footpedal = ExecuteProcess(
+        cmd=["python3", "-m", "xnodes.nodes.legacy.footpedal", "--path", path],
+        output="screen",
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "path",
+                default_value="/dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd",
+                description="Foot pedal evdev device path",
+            ),
+            footpedal,
+        ]
+    )
