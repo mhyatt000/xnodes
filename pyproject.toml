@@ -19,3 +19,11 @@ branch = true
 [tool.coverage.report]
 fail_under = 80
 show_missing = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unused_configs = true
