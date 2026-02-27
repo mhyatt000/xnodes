@@ -17,6 +17,7 @@ def files(*patterns):
 
 
 launch_files = files(
+    "launch/*",  # catchall
     "launch/*.launch.py",
     "launch/**/*.launch.py",
     "launch/*.yaml",
