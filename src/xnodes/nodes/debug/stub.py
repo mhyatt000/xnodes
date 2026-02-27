@@ -39,10 +39,16 @@ class StubNode(Node):
 
         self.get_logger().info(f"Stub spec loaded from {cfg.spec}; publishers={len(self._pubs)}")
 
+    @property
+    def logger(self) -> rclpy.logging.Logger:
+        return self.get_logger()
+
     def _read_spec(self, path: Path) -> dict:
-        if not path.exists():
-            raise FileNotFoundError(f"spec file not found: {path}")
-        with path.open("r", encoding="utf-8") as f:
+        p = Path(path).expanduser().resolve()
+        self.logger.info(f"Reading spec from {p}")
+        if not p.exists():
+            raise FileNotFoundError(f"spec file not found: {p}")
+        with p.open("r", encoding="utf-8") as f:
             spec = yaml.load(f, Loader=yaml.FullLoader)
         if not isinstance(spec, dict):
             raise TypeError(f"spec must be a dict, got {type(spec).__name__}")
