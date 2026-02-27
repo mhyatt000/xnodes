@@ -49,6 +49,10 @@ A ROS 2 Python package for spatial perception and camera calibration. Provides n
 
 This package lives at `~/ws/src/xnodes` and is built inside the ROS 2 workspace at `~/ws`. Dependencies are declared in `package.xml` and resolved by the workspace — do not use `pip`, `uv`, or `conda` to manage dependencies.
 
+## Environment
+
+A `.envrc` (direnv) in this repo sets `PIXI_PROJECT_MANIFEST=~/ws/pixi.toml`, so `pixi shell` works from this directory even though `pixi.toml` lives at `~/ws/`.
+
 ## Build & Run
 
 ```bash
