@@ -25,6 +25,8 @@ docs
     │   ├── integration.md
     │   └── unit.md
     └── ros
+        ├── integration.md
+        └── unit.md
 ```
 
 One-liners for each docs file:
@@ -38,6 +40,8 @@ One-liners for each docs file:
 - `docs/antipattern/broad_except.md` - Why broad `except` is harmful and how to catch specific exceptions.
 - `docs/antipattern/import.md` - Avoid hiding import errors with try/except fallback stubs; fail explicitly on missing deps.
 - `docs/antipattern/node_business_logic_coupling.md` - Keep ROS nodes thin; move decision logic into testable services/policies.
+- `docs/test/ros/unit.md` - ROS unit test spec: pure-Python helpers only, no rclpy, run with pytest.
+- `docs/test/ros/integration.md` - ROS integration test spec: launch_testing, real nodes, topic/TF assertions, colcon test.
 
 ## What is xnodes
 
