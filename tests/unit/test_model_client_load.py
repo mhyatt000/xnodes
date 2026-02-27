@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-from pathlib import Path
 import sys
 import types
 
@@ -87,6 +86,17 @@ def _stub_dependencies(monkeypatch):
     jax.tree = types.SimpleNamespace(map=lambda fn, x: x)
     monkeypatch.setitem(sys.modules, "jax", jax)
 
+    rich = types.ModuleType("rich")
+    rich_pretty = types.ModuleType("rich.pretty")
+    rich_pretty.pprint = lambda *_args, **_kwargs: None
+    rich.pretty = rich_pretty
+    monkeypatch.setitem(sys.modules, "rich", rich)
+    monkeypatch.setitem(sys.modules, "rich.pretty", rich_pretty)
+
+    tyro = types.ModuleType("tyro")
+    tyro.cli = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "tyro", tyro)
+
     openpi_client = types.ModuleType("openpi_client")
     wcp = types.ModuleType("openpi_client.websocket_client_policy")
 
@@ -105,11 +115,10 @@ def _stub_dependencies(monkeypatch):
 
 def test_model_client_module_loads(monkeypatch):
     _stub_dependencies(monkeypatch)
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "src"))
-    monkeypatch.delitem(sys.modules, "xnodes.nodes.xgym_legacy.base", raising=False)
-    monkeypatch.delitem(sys.modules, "xnodes.nodes.xgym_legacy.model", raising=False)
+    monkeypatch.delitem(sys.modules, "xnodes.nodes.legacy.base", raising=False)
+    monkeypatch.delitem(sys.modules, "xnodes.nodes.legacy.model", raising=False)
 
-    model = importlib.import_module("xnodes.nodes.xgym_legacy.model")
+    model = importlib.import_module("xnodes.nodes.legacy.model")
 
     assert isinstance(model.NOMODEL, model.ModelClientConfig)
     assert issubclass(model.MyClient, model.wcp.WebsocketClientPolicy)

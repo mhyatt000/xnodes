@@ -1,106 +1,47 @@
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass
-from enum import Enum
 import threading
 import time
+from typing import Any
 
-import jax
 import numpy as np
-from openpi_client import websocket_client_policy as wcp
 import rclpy
 from rich.pretty import pprint
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 import tyro
+from webpolicy.client import Client
 from xarm_msgs.msg import RobotMsg
+
+from xnodes.core.model_client import (
+    ActionRepresentation,
+    build_idle_target,
+    build_policy_payload,
+    extract_action_targets,
+    extract_camera_images,
+    missing_camera_images,
+    ModelClientConfig,
+    NOMODEL,
+)
 
 from .base import Base
 
 np.set_printoptions(suppress=True)  # no scientific notation
 
-
-class ActionRepresentation(Enum):
-    ABS = "absolute"
-    REL = "relative"
-
-
-@dataclass
-class ModelClientConfig:
-    host: str
-    port: str
-
-    rep: ActionRepresentation
-    task: str
-    # to use weigted average across time
-    ensemble: bool = False
-    # server: Server = Server.XGYM  # model server architecture
+__all__ = [  # bwd compatibility
+    "NOMODEL",
+    "ActionRepresentation",
+    "Model",
+    "ModelClientConfig",
+    "MyClient",
+    "main",
+    "run",
+]
 
 
-NOMODEL = ModelClientConfig(
-    host="none",
-    port=8000,
-    rep=ActionRepresentation.REL,
-    task="none",
-    ensemble=False,
-)
-
-
-class GaussianConv:
-    def __init__(self, kernel_size=5, std=1.0):
-        assert kernel_size % 2 == 1, "kernel_size must be odd for symmetric smoothing"
-        self.kernel_size = kernel_size
-        self.std = std
-        self.half_k = kernel_size // 2
-
-        # Create symmetric Gaussian kernel
-        x = np.arange(kernel_size) - self.half_k
-        self.kernel = np.exp(-0.5 * (x / std) ** 2)
-        self.kernel /= self.kernel.sum()
-
-        # Rolling buffer with symmetric size
-        self.buffer = deque(maxlen=kernel_size)
-
-    def __call__(self, x):
-        x = np.atleast_1d(x).astype(float)
-        result = []
-
-        if x.shape[0] == 1:
-            # Streaming mode: single value
-            self.buffer.append(x.item())
-            buffer_np = np.array(self.buffer)
-            i = len(buffer_np) - 1
-            start = max(0, i - self.half_k)
-            end = i + self.half_k + 1
-            k_start = self.half_k - (i - start)
-            k_end = k_start + (end - start)
-            values = buffer_np[start:end]
-            weights = self.kernel[k_start:k_end]
-            return np.average(values, weights=weights)
-
-        else:
-            # Batch mode: fill buffer and process entire sequence
-            self.buffer.clear()
-            self.buffer.extend(x.tolist())
-            buffer_np = np.array(self.buffer)
-            N = len(x)
-
-            for i in range(N):
-                start = max(0, i - self.half_k)
-                end = min(N, i + self.half_k + 1)
-                k_start = self.half_k - (i - start)
-                k_end = k_start + (end - start)
-                values = x[start:end]
-                weights = self.kernel[k_start:k_end]
-                result.append(np.average(values, weights=weights))
-
-            return np.array(result)
-
-
-class MyClient(wcp.WebsocketClientPolicy):
+class MyClient(Client):
     def reset(self):
-        self.infer({"reset": True})
+        self.step({"reset": True})
 
 
 class Model(Base):
@@ -110,18 +51,15 @@ class Model(Base):
         super().__init__("model")
         self.cfg = cfg
 
-        self.joints = None
-        self.pose = None
-        self.gripper = None
-        self.g = 1
-        self.gconv = GaussianConv(kernel_size=5, std=1.0)
+        self.joints: np.ndarray | None = None
+        self.pose: np.ndarray | None = None
+        self.gripper: np.ndarray | None = None
 
         self.req_hz = 20  # request from server frequency
         self.cmd_hz = 100  # command frequency
         self.resolution = 1  # every 2 predicted steps
 
-        self.data = {}
-        cams = [x for x in self.list_camera_topics() if any(k in x for k in ["rs", "worm"])]
+        self.data: dict[str, np.ndarray] = {}
         self.build_cam_subs()
 
         self.policy = MyClient(host=cfg.host, port=cfg.port)
@@ -154,7 +92,7 @@ class Model(Base):
         time.sleep(0.25)
 
         self.joints = None
-        self.poleaderse = None
+        self.pose = None
         self.gripper = None
         self.targets = None
 
@@ -182,7 +120,7 @@ class Model(Base):
 
         if len(msg.position) == 6:
             return
-        self.joints = np.array(msg.position)
+        self.joints = np.array(msg.position).astype(np.float32)
         # self.joint_names = msg.name
 
     def _command_loop(self):
@@ -205,162 +143,32 @@ class Model(Base):
             if not self._reset:
                 self.policy.reset()
                 self._reset = True
-            # conat joints gripper
-            target = np.concatenate([self.joints, self.gripper], axis=-1)
-            self.targets = [target]
+            self.targets = [build_idle_target(self.joints, self.gripper)]
             return
 
-        # example batch
-        # image_left_wrist: '(1, 1, 224, 224, 224) != (1, 1, 224, 224, 3)',
-        # image_primary: '(1, 1, 224, 224, 224) != (1, 1, 224, 224, 3)',
-        # proprio_single: '(1, 1, 1, 6) != (1, 1, 6)',
-
-        pose = self.pose
-
-        prefix = "/xgym/camera/"
-        imgs = {k: self.data.get(prefix + k) for k in ["low", "side", "wrist"]}
-
-        spec = lambda arr: jax.tree.map(lambda x: x.shape, arr)
-        # pprint(spec(imgs))
-
-        rad2deg = lambda x: x * 180 / np.pi
-        deg2rad = lambda x: x * np.pi / 180
-
-        if any(x is None for k, x in imgs.items()):
-            self.get_logger().info(f"Missing images: {spec(imgs)}")
+        imgs = extract_camera_images(self.data)
+        missing = missing_camera_images(imgs)
+        if missing:
+            self.get_logger().info(f"Missing images: {missing}")
             return
-
-        pose[:3] /= 1000  # mm to m
 
         try:
-            gripper = self.gripper
-            # gripper = np.array([0.99]) if gripper > 0.8 else gripper
-            assert gripper <= 1.0, "Gripper out of bounds"
-            state = np.concatenate([self.joints, gripper], axis=-1)
-        except Exception as e:
-            self.get_logger().info(f"Gripper error: {e}")
+            payload = build_policy_payload(
+                joints=self.joints,
+                pose=self.pose,
+                gripper=self.gripper,
+                images={k: v for k, v in imgs.items() if v is not None},
+                ensemble=self.cfg.ensemble,
+            )
+        except ValueError as exc:
+            self.get_logger().info(f"Payload error: {exc}")
             return
 
-        # pprint(state)
-        obs = {
-            "pixels": jax.tree.map(lambda x: x.astype(np.uint8), imgs),
-            "agent_pos": state,
-        }
-        obs = jax.tree.map(lambda x: x.reshape(1, *x.shape), obs)
-
-        # pprint(spec(obs))
-        payload = {
-            "observation": {
-                # 'image_high'
-                "image_left_wrist": obs["pixels"]["wrist"][None],
-                "image_primary": obs["pixels"]["low"][None],
-                "image_side": obs["pixels"]["side"][None],
-                # 'proprio_single_arm' : pose.reshape(1,1,-1).astype(np.float32),
-                "proprio_single_arm": np.concatenate(
-                    [pose.reshape(1, 1, -1).astype(np.float32), state.reshape(1, 1, -1).astype(np.float32)], axis=-1
-                ),
-            },
-            "ensemble": False,
-        }
-
-        # pprint(payload['observation']['proprio_single_arm'])
-        # actions : dict= self.policy.infer(obs)
-        actions: dict = self.policy.infer(payload)
-        # pprint(spec(actions))
-
-        act = actions["action"].copy()
-
-        np.set_printoptions(suppress=True, precision=2)
-        # pprint(np.minimum(1.0, act[:,-1]))
-        # pprint( act[:,-1])
-
-        # g = act[:, -1]
-        # act[:,-1] = np.where(g < 0.5, 0.3, g)
-        self.targets = act[:: self.resolution].copy()
-
-        # print( t.round(4))
-        # print(state.round(4))
-        # print()
-
-        """
-        pprint(
-                jax.tree.map(
-                lambda x: x.round(4),
-                    {
-                        "actions": actions,
-                        "joints": self.joints,
-                        "gripper": self.gripper,
-                        },
-                    )
-                )
-        """
-        return
-
-        quit()
-
-        # else: # no more uvicorn/fastapi
-        # observation = asdict(observation)
-        # actions = self.client(**observation)
-
-        ntile = 1
-        expanded = np.tile(actions, (ntile, 1))  # Repeat 4 times to get (200, 8)
-        # expanded[:,-1] *= 850
-        # expanded = actions.copy()
-
-        sigmoid = lambda x: 1 / (1 + np.exp(-x))
-        # gripper = np.clip(expanded[:, -1:], 0, 1)
-        gripper = np.clip(expanded[:, -1:], 0, 1)
-        # gripper = np.where(gripper > 0.5, 1, 0)
-
-        # g = gripper.mean()
-        # gripper = np.zeros_like(gripper) + g
-        # gripper = np.cumsum(gripper, axis=0) / np.arange(1, len(gripper) + 1)[:, None]
-
-        # print(gripper.flatten().round(2))
-        _grip = []
-        # print(gripper.flatten().tolist())
-        for g in gripper.flatten().tolist():
-            rate = 0.9
-            self.g = rate * self.g + (1 - rate) * g
-            _grip.append(self.g)
-
-        # gripper = self.gconv(np.array(_grip))[:, None]
-        gripper = np.array(_grip)[:, None]
-
-        # print(gripper.flatten().round(2))
-        # print()
-
-        # gripper @ 5hz
-        # n = len(gripper) // 3
-        # gripper = sum([[g] * n for g in gripper.tolist()[::n]], [])
-        # gripper = np.array(gripper).round(1)
-        # gripper = np.zeros_like(gripper) + gripper[n]
-
-        # gripper = np.ones_like(gripper)
-
-        # if self.cfg.rep == ActionRepresentation.REL:
-        expanded[:, :-1] /= ntile  # gripper stays the same
-        cumulants = np.cumsum(expanded[:, :-1], axis=0)
-        targets = cumulants + np.tile(self.joints, (len(cumulants), 1))
-        # if self.cfg.rep == ActionRepresentation.ABS:
-        # print("ABS")
-        # targets = expanded[:, :-1]
-
-        targets = np.concatenate((targets, gripper), axis=1)
-
-        # print(self.joints.round(4))
-        # print(rad2deg(targets).round(4))
-
-        # from matplotlib import pyplot as plt
-        # fig,axs = plt.subplots(1,1)
-        # for i in range(targets.shape[1]):
-        # axs.plot(targets[:,i], label=f"joint {i}")
-
-        # plt.legend()
-        # plt.show()
-        # quit()
-
-        self.targets = targets
+        actions: dict[str, Any] = self.policy.step(payload)
+        try:
+            self.targets = extract_action_targets(actions, resolution=self.resolution)
+        except (KeyError, TypeError, ValueError) as exc:
+            self.get_logger().info(f"Action parse error: {exc}")
 
     def reset(self):
         self._reset = False  # send reset signal to thread
@@ -372,7 +180,7 @@ class Model(Base):
             if self.joints is None or self.gripper is None:
                 # print("No joints or gripper")
                 return
-            target = np.concatenate([self.joints, self.gripper], axis=-1)
+            target = build_idle_target(self.joints, self.gripper)
             # self.step()
             # return
         else:
