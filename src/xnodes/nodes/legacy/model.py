@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import argparse
 import threading
-import time
 from typing import Any
 
 import numpy as np
@@ -40,14 +38,28 @@ __all__ = [  # bwd compatibility
 class Model(Base):
     """Recieves action from model server"""
 
-    def __init__(self, cfg: ModelClientConfig):
+    def __init__(self, cfg: ModelClientConfig | None = None):
         super().__init__("model")
-        self.cfg = cfg
         self._lock = threading.Lock()
 
         self.joints: np.ndarray | None = None
         self.pose: np.ndarray | None = None
         self.gripper: np.ndarray | None = None
+
+        default_cfg = NOMODEL if cfg is None else cfg
+        host = str(self.declare_parameter("host", default_cfg.host).value)
+        port = int(self.declare_parameter("port", int(default_cfg.port)).value)
+        rep_raw = str(self.declare_parameter("rep", default_cfg.rep.name).value).strip().upper()
+        task = str(self.declare_parameter("task", default_cfg.task).value)
+        ensemble = bool(self.declare_parameter("ensemble", bool(default_cfg.ensemble)).value)
+
+        try:
+            rep = ActionRepresentation[rep_raw]
+        except KeyError as exc:
+            msg = f"Invalid rep={rep_raw}. Expected one of {[x.name for x in ActionRepresentation]}"
+            raise ValueError(msg) from exc
+
+        self.cfg = ModelClientConfig(host=host, port=port, rep=rep, task=task, ensemble=ensemble)
 
         self.req_hz = float(self.declare_parameter("req_hz", 20.0).value)  # request from server frequency
         self.cmd_hz = float(self.declare_parameter("cmd_hz", 100.0).value)  # command frequency
@@ -65,7 +77,7 @@ class Model(Base):
         self.data: dict[str, np.ndarray] = {}
         self.build_cam_subs()
 
-        self.policy = Client(host=cfg.host, port=cfg.port)
+        self.policy = Client(host=self.cfg.host, port=self.cfg.port)
         # self.policy.reset()
         self._reset = True
 
@@ -76,14 +88,9 @@ class Model(Base):
         self.moveit_sub = self.create_subscription(JointState, self.joint_topic, self.set_joints, 10)
         self.moveit_pose_sub = self.create_subscription(RobotMsg, self.pose_topic, self.set_pose, 10)
         self.gripper_sub = self.create_subscription(Float32MultiArray, self.gripper_topic, self.set_gripper, 10)
-        # self.timer = self.create_timer(1, self.step)
+        self.step_timer = self.create_timer(1 / self.req_hz, self.step)
         self.publisher = self.create_publisher(Float32MultiArray, self.state_topic, 10)
-        self.timer = self.create_timer(1 / self.cmd_hz, self.command)
-
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._command_loop, daemon=True)
-        self._thread.start()
-        # self.stepper = self.create_timer(1 / self.req_hz, self.step)
+        self.command_timer = self.create_timer(1 / self.cmd_hz, self.command)
 
     @property
     def logger(self):
@@ -128,24 +135,12 @@ class Model(Base):
         """
 
         if len(msg.position) == 6:
+            self.logger.error("Received JointState with 6 joints; shutting down node.")
+            rclpy.shutdown()
             return
         with self._lock:
             self.joints = np.array(msg.position).astype(np.float32)
         # self.joint_names = msg.name
-
-    def _command_loop(self):
-        rate = 1.0 / self.req_hz
-        while not self._stop_event.is_set():
-            tic = time.time()
-            self.logger.debug("step")
-            self.step()
-            toc = time.time()
-            time.sleep(max(0, rate - (toc - tic)))
-
-    def destroy_node(self):
-        self._stop_event.set()
-        self._thread.join()
-        super().destroy_node()
 
     def step(self):
         with self._lock:
@@ -215,13 +210,10 @@ class Model(Base):
         self.publisher.publish(msg)
 
 
-def main(cfg: ModelClientConfig):
-    print(cfg)
-
-    args = None
-    rclpy.init(args=args)
-
+def main(cfg: ModelClientConfig | None = None):
+    rclpy.init(args=None)
     node = Model(cfg)
+    print(node.cfg)
 
     try:
         rclpy.spin(node)
@@ -233,37 +225,7 @@ def main(cfg: ModelClientConfig):
             rclpy.shutdown()
 
 
-def _parse_config(argv: list[str]) -> ModelClientConfig:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--host", default=NOMODEL.host)
-    parser.add_argument("--port", type=int, default=NOMODEL.port)
-    parser.add_argument(
-        "--rep",
-        choices=[x.name for x in ActionRepresentation],
-        default=NOMODEL.rep.name,
-    )
-    parser.add_argument("--task", default=NOMODEL.task)
-    parser.add_argument("--ensemble", nargs="?", const="true", default=str(NOMODEL.ensemble))
-
-    known, _ = parser.parse_known_args(argv)
-    ensemble = str(known.ensemble).strip().lower() in {"1", "true", "yes", "on"}
-    return ModelClientConfig(
-        host=known.host,
-        port=known.port,
-        rep=ActionRepresentation[known.rep],
-        task=known.task,
-        ensemble=ensemble,
-    )
-
-
 def run(cfg: ModelClientConfig | None = None):
-    if cfg is None:
-        import sys
-
-        argv = sys.argv[1:]
-        if "--ros-args" in argv:
-            argv = argv[: argv.index("--ros-args")]
-        cfg = _parse_config(argv)
     main(cfg)
 
 
