@@ -1,6 +1,9 @@
 #!/bin/python
 from __future__ import annotations
 
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -8,18 +11,31 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description() -> LaunchDescription:
+    pkg_share = Path(get_package_share_directory("xnodes"))
+    default_params = str(pkg_share / "config" / "model.yaml")
+
     host = LaunchConfiguration("host")
     port = LaunchConfiguration("port")
     rep = LaunchConfiguration("rep")
     task = LaunchConfiguration("task")
     ensemble = LaunchConfiguration("ensemble")
     log_level = LaunchConfiguration("log_level")
+    params_file = LaunchConfiguration("params_file")
 
     model = Node(
         package="xnodes",
         executable="model",
         output="screen",
-        arguments=["--host", host, "--port", port, "--rep", rep, "--task", task, "--ensemble", ensemble],
+        parameters=[
+            params_file,
+            {
+                "host": host,
+                "port": port,
+                "rep": rep,
+                "task": task,
+                "ensemble": ensemble,
+            },
+        ],
         ros_arguments=["--log-level", log_level],
     )
 
@@ -31,6 +47,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("task", default_value="none"),
             DeclareLaunchArgument("ensemble", default_value="False"),
             DeclareLaunchArgument("log_level", default_value="info"),
+            DeclareLaunchArgument("params_file", default_value=default_params),
             model,
         ]
     )

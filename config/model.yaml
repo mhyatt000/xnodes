@@ -1,0 +1,14 @@
+model:
+  ros__parameters:
+    host: none
+    port: 8000
+    rep: REL
+    task: none
+    ensemble: false
+    req_hz: 20.0
+    cmd_hz: 100.0
+    resolution: 1
+    joint_topic: /xarm/joint_states
+    pose_topic: /xarm/robot_states
+    gripper_topic: /xgym/gripper
+    state_topic: /gello/state
