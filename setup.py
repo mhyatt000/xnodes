@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from glob import glob
-import os
 from pathlib import Path
 
 from setuptools import find_packages, setup
@@ -12,8 +10,10 @@ package_name = "xnodes"
 def files(*patterns):
     out = []
     for pat in patterns:
-        out.extend(glob(pat, recursive=True))
-    return [p for p in out if os.path.isfile(p)]
+        # out.extend(glob(pat, recursive=True))
+        out.extend(str(p) for p in Path().rglob(pat))
+
+    return [p for p in out if Path(p).is_file()]
 
 
 launch_files = files(
@@ -56,5 +56,8 @@ setup(
             "keyboard = xnodes.nodes.ctrl.keyboard:run",
             "model = xnodes.nodes.legacy.model:run",
         ],
+    },
+    extras_require={
+        "test": ["pytest"],
     },
 )
