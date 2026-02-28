@@ -33,7 +33,6 @@ One-liners for each docs file:
 - `docs/DESIGN.md` - Entry point for design decisions; links to antipattern guidance.
 - `docs/PIXI.md` - How to define and run Pixi tasks, with syntax, examples, and best practices.
 - `docs/PIXI_GH.md` - How to add GitHub-hosted Python dependencies to Pixi using PEP 508 refs.
-- `docs/TYRO.md` - Dataclass + Tyro CLI style guide (field comments inline, `main(tyro.cli(Config))` pattern).
 - `docs/ZEN.md` - The Zen of Python principles used as style and design heuristics.
 - `docs/batch.md` - Canonical nested batch spec example (action/observation/task shapes and pad masks).
 - `docs/install.md` - Installation policy: build via `colcon` in `~/ws`; never use pip/uv/conda.
@@ -91,37 +90,12 @@ Ruff config is in `pyproject.toml`: line-length 120, target py311, `from __futur
 ## Architecture
 
 ### Package layout
-- `src/xnodes/nodes/` — Standalone ROS 2 nodes (each with `run()` for ros2 entrypoint + `main(tyro.cli(Config))` for direct Python execution)
+- `src/xnodes/nodes/` — Standalone ROS 2 nodes
 - `src/xnodes/april/` — AprilTag grid detection, config parsing, detector functions
 - `src/xnodes/core/` — Shared utilities: camera info models (Pydantic), quaternion math, calibration metrics
 - `src/xnodes/apriltag.py` — AprilTag detection node (OpenCV ArUco-based)
 - `launch/` — ROS 2 launch files
 - `config/` — YAML configs for stereo rigs, camera intrinsics, AprilTag grids
-
-### Node pattern
-Every node follows this structure:
-```python
-@dataclass
-class Config:
-    param: str = "default"
-
-class MyNode(Node):
-    def __init__(self, cfg: Config | None = None):
-        super().__init__("my_node")
-        if cfg is None:
-            cfg = Config(param=self.declare_parameter("param", "default").value)
-        # setup publishers, subscribers, timers
-
-def run(cfg: Config | None = None):
-    rclpy.init(); node = MyNode(cfg); rclpy.spin(node)
-
-def main(cfg: Config):
-    run(cfg)
-
-if __name__ == "__main__":
-    main(tyro.cli(Config))
-```
-
 ### Topic naming
 Nodes scrape the topic prefix from subscriber arguments and republish derived topics under that prefix (e.g. `--sub /video0` → publishes to `/video0/depth/image_raw`).
 
@@ -135,7 +109,7 @@ Nodes scrape the topic prefix from subscriber arguments and republish derived to
 - Concise code and docstrings; describe dataclass fields with inline comments, not in docstring
 - OOP for components; `config.create()` pattern for building from configs
 - Feature-based module organization, shared/core layer for reusable primitives
-- `pathlib.Path` over `os.path`, f-strings over `.format()`, `tyro` over `argparse`
+- `pathlib.Path` over `os.path`, f-strings over `.format()`
 - Cyclomatic complexity ≤ 8 (prefer 4-5); keep variable names short
 - Avoid excessive nesting and try/except blocks
 - QoS: sensor data uses `qos_profile_sensor_data` (best effort, depth=5)
