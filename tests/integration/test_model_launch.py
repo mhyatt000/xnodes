@@ -18,15 +18,22 @@ from xarm_msgs.msg import RobotMsg
 
 OK = 0
 SIGINT = -2
+SIGTERM = -15
 
 
 @pytest.mark.launch_test
 def generate_test_description():
+    stub_path = Path(__file__).resolve().parent / "policy_stub_server.py"
+    policy_stub = launch.actions.ExecuteProcess(
+        cmd=["python3", str(stub_path), "--host", "127.0.0.1", "--port", "8000"],
+        name="policy_stub",
+        output="screen",
+    )
     launch_path = Path(__file__).resolve().parents[2] / "launch" / "model"
     include_model = launch.actions.IncludeLaunchDescription(
         launch.launch_description_sources.AnyLaunchDescriptionSource(str(launch_path)),
         launch_arguments={
-            "host": "none",
+            "host": "127.0.0.1",
             "port": "8000",
             "rep": "REL",
             "task": "none",
@@ -38,6 +45,7 @@ def generate_test_description():
     return (
         launch.LaunchDescription(
             [
+                policy_stub,
                 include_model,
                 launch_testing.actions.ReadyToTest(),
             ]
@@ -111,4 +119,4 @@ class TestModelLaunch(unittest.TestCase):
 @launch_testing.post_shutdown_test()
 class TestModelExit(unittest.TestCase):
     def test_exit_codes(self, proc_info) -> None:
-        launch_testing.asserts.assertExitCodes(proc_info, allowable_exit_codes=[OK, SIGINT])
+        launch_testing.asserts.assertExitCodes(proc_info, allowable_exit_codes=[OK, SIGINT, SIGTERM])
