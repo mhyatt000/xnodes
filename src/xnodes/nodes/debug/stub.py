@@ -15,15 +15,25 @@ import yaml
 @dataclass
 class Config:
     spec: Path = Path("stub.yaml")  # Nested YAML dict with tuple/list shape leaves
-    name: str = "stub_node"  # ROS node name
+    name: str = "stub_node"  # ROS node name (used for direct CLI execution)
     rate_hz: float = 1.0  # Publish frequency
 
 
 class StubNode(Node):
-    def __init__(self, cfg: Config):
-        super().__init__(cfg.name)
-        self.cfg = cfg
-        self.spec = self._read_spec(cfg.spec)
+    def __init__(self, cfg: Config | None = None):
+        node_name = "stub_node" if cfg is None else cfg.name
+        super().__init__(node_name, automatically_declare_parameters_from_overrides=cfg is None)
+
+        if cfg is None:
+            rate_hz = float(self.declare_parameter("rate_hz", 1.0).value)
+            spec = self._read_spec_from_params()
+            spec_source = "ros parameters"
+        else:
+            rate_hz = cfg.rate_hz
+            spec = self._read_spec_file(cfg.spec)
+            spec_source = str(cfg.spec)
+
+        self.spec = spec
         flat = flatten_dict(self.spec, sep="/")
 
         self._shapes: dict[str, tuple[int, ...]] = {}
@@ -33,19 +43,19 @@ class StubNode(Node):
             self._shapes[topic_str] = self._parse_shape(shape, topic_str)
             self._pubs[topic_str] = self.create_publisher(Float32MultiArray, topic_str, 10)
 
-        if cfg.rate_hz <= 0:
-            raise ValueError(f"rate_hz must be > 0, got {cfg.rate_hz}")
-        self.create_timer(1.0 / cfg.rate_hz, self._tick)
+        if rate_hz <= 0:
+            raise ValueError(f"rate_hz must be > 0, got {rate_hz}")
+        self.create_timer(1.0 / rate_hz, self._tick)
 
-        self.get_logger().info(f"Stub spec loaded from {cfg.spec}; publishers={len(self._pubs)}")
+        self.get_logger().info(f"Stub spec loaded from {spec_source}; publishers={len(self._pubs)}")
 
     @property
     def logger(self) -> rclpy.logging.Logger:
         return self.get_logger()
 
-    def _read_spec(self, path: Path) -> dict:
+    def _read_spec_file(self, path: Path) -> dict:
         p = Path(path).expanduser().resolve()
-        self.logger.info(f"Reading spec from {p}")
+        self.logger.info(f"Reading spec from file {p}")
         if not p.exists():
             raise FileNotFoundError(f"spec file not found: {p}")
         with p.open("r", encoding="utf-8") as f:
@@ -53,6 +63,29 @@ class StubNode(Node):
         if not isinstance(spec, dict):
             raise TypeError(f"spec must be a dict, got {type(spec).__name__}")
         return spec
+
+    def _read_spec_from_params(self) -> dict:
+        if self.has_parameter("spec"):
+            spec = self.get_parameter("spec").value
+            if isinstance(spec, str):
+                return self._read_spec_file(Path(spec))
+
+        prefixed = self.get_parameters_by_prefix("spec")
+        if not prefixed:
+            raise ValueError("Missing spec. Set ros__parameters.spec as a dict or a string file path.")
+
+        root: dict[str, object] = {}
+        for dotted_name, param in prefixed.items():
+            parts = dotted_name.split(".")
+            cur = root
+            for part in parts[:-1]:
+                nxt = cur.get(part)
+                if not isinstance(nxt, dict):
+                    nxt = {}
+                    cur[part] = nxt
+                cur = nxt
+            cur[parts[-1]] = param.value
+        return root
 
     def _parse_shape(self, value: object, topic: str) -> tuple[int, ...]:
         if isinstance(value, int):
@@ -89,9 +122,7 @@ class StubNode(Node):
 
 
 def run(cfg: Config | None = None) -> None:
-    if cfg is None:
-        cfg = Config()
-    rclpy.init()
+    rclpy.init(args=None)
     node = StubNode(cfg)
     try:
         rclpy.spin(node)

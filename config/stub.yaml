@@ -1,0 +1,16 @@
+stub_node:
+  ros__parameters:
+    rate_hz: 1.0
+    spec:
+      obs:
+        camera:
+          image: [64, 64, 3]
+          depth: [64, 64]
+        state:
+          joint_pos: [7]
+          joint_vel: [7]
+      action:
+        arm:
+          target: [7]
+        gripper:
+          target: [1]
