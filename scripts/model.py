@@ -11,7 +11,7 @@ from rich import print
 import tyro
 from webpolicy.client import Client
 
-from xnodes.core.model_client import build_policy_payload, extract_action_targets
+from xnodes.core.model_client import extract_action_targets
 
 
 @dataclass
@@ -20,57 +20,48 @@ class Config:
     port: int = 8000  # model server port
     hz: float = 5.0  # loop frequency
     image_size: int = 128  # square dummy image size
+    proprio_dim: int = 14  # proprio vector length (pose + joints + gripper)
     resolution: int = 1  # action downsample factor
     ensemble: bool = False  # request ensembled policy output
     steps: int = 0  # 0 means run forever
 
 
-class MyClient(Client):
-    def reset(self):
-        self.step({"reset": True})
-
-
-def dummy_payload(image_size: int, ensemble: bool, tick: int) -> dict[str, Any]:
-    joints = np.linspace(0.0, 0.6, 7, dtype=np.float32)
-    pose = np.array([120.0, 210.0, 350.0, 0.1, -0.2, 0.3], dtype=np.float32)  # mm + rotation
-    gripper = np.array([0.35], dtype=np.float32)
-
-    frame = np.full((image_size, image_size, 3), tick % 255, dtype=np.uint8)
-    images = {
-        "low": frame,
-        "side": np.roll(frame, shift=1, axis=1),
-        "wrist": np.roll(frame, shift=2, axis=0),
-    }
-
-    return build_policy_payload(
-        joints=joints,
-        pose=pose,
-        gripper=gripper,
-        images=images,
-        ensemble=ensemble,
+def dummy_observation(spec: Any) -> Any:
+    return jax.tree.map(
+        lambda shape: np.random.rand(*shape).astype(np.float32), spec, is_leaf=lambda x: isinstance(x, tuple)
     )
 
 
-def model_client_step(client: MyClient, payload: dict[str, Any], resolution: int) -> np.ndarray:
-    actions: dict[str, Any] = client.step(payload)
-    return extract_action_targets(actions, resolution=resolution)
+def dummy_payload(spec: Any, ensemble: bool) -> dict[str, Any]:
+    return {"observation": dummy_observation(spec), "ensemble": ensemble}
 
 
-def spec(tree: dict[str, Any]):
+def describe(tree: Any) -> Any:
     def info(x):
         if isinstance(x, np.ndarray):
             return f"ndarray{tuple(x.shape)} dtype={x.dtype}"
         if isinstance(x, bool):
             return x
-        else:
-            return type(x)
+        return type(x)
 
-    return jax.tree.map(lambda x: info(x), tree)
+    return jax.tree.map(info, tree)
+
+
+class MyClient(Client):
+    pass
 
 
 def run(cfg: Config) -> None:
     client = MyClient(host=cfg.host, port=cfg.port)
-    client.reset()
+
+    s = cfg.image_size
+    obs_spec = {
+        "image_left_wrist": (1, 1, s, s, 3),
+        "image_primary": (1, 1, s, s, 3),
+        "image_side": (1, 1, s, s, 3),
+        "proprio_single_arm": (1, 1, cfg.proprio_dim),
+    }
+    client.reset(dummy_payload(obs_spec, cfg.ensemble))
 
     period = 1.0 / max(cfg.hz, 1.0)
     tick = 0
@@ -79,10 +70,12 @@ def run(cfg: Config) -> None:
     print("Press Ctrl+C to stop.")
 
     while cfg.steps == 0 or tick < cfg.steps:
-        payload = dummy_payload(cfg.image_size, cfg.ensemble, tick)
-        print(spec(payload))
-        targets = model_client_step(client, payload, cfg.resolution)
-        print(f"step={tick:04d} targets.shape={targets.shape}")
+        payload = dummy_payload(obs_spec, cfg.ensemble)
+        print(describe(payload))
+        result: dict[str, Any] = client.step(payload)
+        actions = extract_action_targets(result, resolution=cfg.resolution)
+
+        print(f"step={tick:04d} actions.shape={actions.shape}")
         tick += 1
         time.sleep(period)
 

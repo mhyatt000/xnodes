@@ -55,9 +55,10 @@ class GaussianConv:
         if arr.shape[0] == 1:
             self.buffer.append(arr.item())
             buffer_np = np.array(self.buffer)
+            n = len(buffer_np)
             i = len(buffer_np) - 1
             start = max(0, i - self.half_k)
-            end = i + self.half_k + 1
+            end = min(n, i + self.half_k + 1)
             k_start = self.half_k - (i - start)
             k_end = k_start + (end - start)
             values = buffer_np[start:end]
@@ -133,11 +134,12 @@ def extract_action_targets(actions: Mapping[str, Any], resolution: int) -> np.nd
     if resolution < 1:
         msg = "resolution must be >= 1"
         raise ValueError(msg)
-    if "action" not in actions:
+    key = "actions" if "actions" in actions else "action"
+    if key not in actions:
         msg = "Missing action key in model response"
         raise KeyError(msg)
 
-    act = np.asarray(actions["action"]).copy()
+    act = np.asarray(actions[key]).copy()
     if act.ndim == 1:
         act = act[None]
     return act[::resolution].copy()
