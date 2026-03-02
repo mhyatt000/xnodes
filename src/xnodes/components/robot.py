@@ -13,16 +13,16 @@ class Accelerator:
     def __init__(
         self,
         dt: float = 0.02,
-        Kp: float = 1.0,
-        Kd: float = 0.5,
-        A_max: float = 2.0,
+        kp: float = 1.0,
+        kd: float = 0.5,
+        a_max: float = 2.0,
         initial_position: float = 0.0,
         initial_velocity: float = 0.0,
     ):
         self.dt = dt
-        self.Kp = Kp
-        self.Kd = Kd
-        self.A_max = A_max
+        self.kp = kp
+        self.kd = kd
+        self.a_max = a_max
         self.position = np.array(initial_position, dtype=float)
         self.velocity = np.array(initial_velocity, dtype=float)
         self.i = 0
@@ -32,7 +32,7 @@ class Accelerator:
         tick = time.time()
         goal = np.array(goal, dtype=float)
         error = goal - self.position
-        acceleration = np.clip(self.Kp * error - self.Kd * self.velocity, -self.A_max, self.A_max)
+        acceleration = np.clip(self.kp * error - self.kd * self.velocity, -self.a_max, self.a_max)
         self.velocity += acceleration * self.dt
         self.position += self.velocity * self.dt
         self.i += 1
@@ -54,7 +54,7 @@ class InputMode(StrEnum):
     HELEO = "heleo"
 
 
-class ControlMode(Enum):
+class ControlMode(StrEnum):
     JOINT = "joint"
     CARTESIAN = "cartesian"
 
@@ -63,12 +63,12 @@ class ControlMode(Enum):
 class AccelConfigFactory:
     """Factory for Accelerator instances."""
 
-    A_max: float = 30.0  # max acceleration
-    Kp: float = 800.0  # proportional gain: stiffness of response to position error
-    Kd: float = 40.0  # derivative gain: damping against oscillation
+    a_max: float = 30.0  # max acceleration
+    kp: float = 800.0  # proportional gain: stiffness of response to position error
+    kd: float = 40.0  # derivative gain: damping against oscillation
 
     def create(self, hz: float) -> Accelerator:
-        return Accelerator(dt=1 / hz, A_max=self.A_max, Kp=self.Kp, Kd=self.Kd)
+        return Accelerator(dt=1 / hz, a_max=self.a_max, kp=self.kp, kd=self.kd)
 
 
 @dataclass

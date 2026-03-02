@@ -12,8 +12,8 @@ import tyro
 from xarm.wrapper import XArmAPI
 from xarm_msgs.msg import RobotMsg
 
-from .base import Base
-from .robot_policy import ControlMode, HOME, RobotConfig, RobotPolicy
+from xnodes.components.robot import ControlMode, HOME, RobotConfig, RobotPolicy
+from xnodes.nodes.legacy.base import Base
 
 
 class Xarm(Base):
