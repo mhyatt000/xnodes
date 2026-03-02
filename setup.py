@@ -55,6 +55,7 @@ setup(
             "april = xnodes.nodes.april_grid:run",
             "keyboard = xnodes.nodes.ctrl.keyboard:run",
             "model = xnodes.nodes.legacy.model:run",
+            "bridge = xnodes.nodes.bridge:run",
         ],
     },
     extras_require={
