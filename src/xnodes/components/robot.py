@@ -73,7 +73,7 @@ class AccelConfigFactory:
 
 @dataclass
 class RobotConfig:
-    ip: str = "192.168.1.231"  # robot IP address
+    ip: str | None = "192.168.1.231"  # robot IP address; None → FakeXArm
     dof: int = 7  # degrees of freedom
     input: InputMode = InputMode.GELLO  # input device
     ctrl: ControlMode = ControlMode.JOINT  # control mode

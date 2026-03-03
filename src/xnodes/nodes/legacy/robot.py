@@ -9,11 +9,50 @@ import rclpy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, Float32MultiArray
 import tyro
-from xarm.wrapper import XArmAPI
 from xarm_msgs.msg import RobotMsg
 
 from xnodes.components.robot import ControlMode, HOME, RobotConfig, RobotPolicy
 from xnodes.nodes.legacy.base import Base
+
+
+class FakeXArm:
+    """In-memory stand-in for XArmAPI; constructed when cfg.ip is None."""
+
+    def __init__(self) -> None:
+        self._grip: float = 425.0
+
+    def connect(self) -> None:
+        pass
+
+    def set_gripper_enable(self, enable: bool) -> None:
+        pass
+
+    def set_gripper_mode(self, mode: int) -> None:
+        pass
+
+    def set_gripper_speed(self, speed: int) -> None:
+        pass
+
+    def get_gripper_position(self) -> tuple[int, float]:
+        return 0, self._grip
+
+    def set_gripper_position(self, pos: float, wait: bool = True) -> None:  # noqa: ARG002
+        self._grip = float(pos)
+
+    def set_state(self, state: int = 0) -> int:  # noqa: ARG002
+        return 0
+
+    def set_mode(self, mode: int) -> int:  # noqa: ARG002
+        return 0
+
+    def clean_error(self) -> None:
+        pass
+
+    def clean_warn(self) -> None:
+        pass
+
+    def motion_enable(self, enable: bool) -> None:
+        pass
 
 
 class Xarm(Base):
@@ -27,7 +66,12 @@ class Xarm(Base):
         self.t0 = time.time()
         self.set_period()
 
-        self.robot = XArmAPI(cfg.ip, is_radian=True)
+        if cfg.ip:
+            from xarm.wrapper import XArmAPI
+
+            self.robot = XArmAPI(cfg.ip, is_radian=True)
+        else:
+            self.robot = FakeXArm()
         self.get_logger().info("Initializing robot.")
         self.robot.connect()
         self.mode = 1
@@ -155,7 +199,8 @@ def run(cfg: RobotConfig | None = None) -> None:
         node.get_logger().info("Robot Node shutting down...")
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def main(cfg: RobotConfig) -> None:
