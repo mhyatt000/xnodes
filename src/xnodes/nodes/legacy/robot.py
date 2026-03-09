@@ -86,8 +86,8 @@ class Xarm(Base):
 
         # Subscriptions
         self.create_subscription(Float32MultiArray, "/robot_commands", self._on_command, 10)
-        self.create_subscription(Float32MultiArray, "/gello/state", self._on_leader, 10)
-        self.create_subscription(JointState, "/xarm/joint_states", self._on_joints, 10)
+        self.create_subscription(JointState, "/gello/state", self._on_leader, 10)
+        self.create_subscription(JointState, "/joint_states", self._on_joints, 10)
         self.create_subscription(RobotMsg, "/xarm/robot_states", self._on_pose, 10)
 
         # Publishers
@@ -107,9 +107,15 @@ class Xarm(Base):
         self.policy.on_active(msg.data)
         self._clear_error_states()
 
+    @property
+    def logger(self):
+        return self.get_logger()
+
     # --- Subscription callbacks ---
 
     def _on_joints(self, msg: JointState) -> None:
+        self.logger.info(f"on joints: {np.array(msg.position).round(2)} {np.array(msg.position).shape}")
+        self.logger.info(f"on joints: {list(msg.name)} {len(list(msg.name))}")
         self.policy.update_joints(np.array(msg.position), list(msg.name))
 
     def _on_pose(self, msg: RobotMsg) -> None:
@@ -117,9 +123,11 @@ class Xarm(Base):
 
     def _on_command(self, msg: Float32MultiArray) -> None:
         self.policy.update_command(np.array(msg.data))
+        self.logger.info(f"{self.policy._act}")
 
-    def _on_leader(self, msg: Float32MultiArray) -> None:
-        self.policy.update_leader(np.array(msg.data))
+    def _on_leader(self, msg: JointState) -> None:
+        self.policy.update_leader(np.array(msg.position))
+        self.logger.debug(f"on leader: {np.array(msg.position).round(2)} {np.array(msg.position).shape}")
 
     # --- Timer callbacks ---
 
@@ -130,9 +138,21 @@ class Xarm(Base):
         match self.cfg.ctrl:
             case ControlMode.JOINT:
                 result = self.policy.step_joints()
-                if result is None:
+                if not result:  # result is None:
+                    self.logger.info(f"{result}")
                     return
                 displacements, joint_names, velocities = result
+                # displacements = (goal - self.policy._joints).tolist()
+                # self.logger.info(f'{np.array(displacements).round(2)}')
+                displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
+                eps = 0.005
+                displacements = np.clip(displacements, -eps, eps).tolist()
+                self.logger.info("after")
+                # self.logger.info(f"displ: {(self.policy._leader[:-1]-self.policy._joints).round(2)}")
+                self.logger.info(f"leader{(self.policy._leader).round(2)}")
+                self.logger.info(f"{self.policy._joint_names}")
+                self.logger.info("")
+                # self.logger.info(f"{(self.policy._joints).round(2)}")
                 msg = JointJog()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = "link_base"
@@ -143,8 +163,13 @@ class Xarm(Base):
 
             case ControlMode.CARTESIAN:
                 result = self.policy.step_cartesian()
+                self.logger.info(f"{result}")
                 if result is None:
                     return
+                result = result.tolist()
+                self.logger.info(f"{type(result)}")
+                self.logger.info(f"{type(result[0])}")
+
                 msg = TwistStamped()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = "link_base"
