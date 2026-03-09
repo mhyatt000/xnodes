@@ -1,41 +1,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import glob
+from pathlib import Path
 import time
 
-import draccus
 from gello.agents.gello_agent import GelloAgent
 from gello.env import RobotEnv
 from gello.zmq_core.robot_node import ZMQClientRobot
 import numpy as np
 import rclpy
-from std_msgs.msg import Float32MultiArray
+from sensor_msgs.msg import JointState
+import tyro
 
-# from gello.agents.agent import BimanualAgent, DummyAgent
-# from gello.data_utils.format_obs import save_frame
-# from gello.robots.robot import PrintRobot
-from .base import Base
-
-
-def print_color(*args, color=None, attrs=(), **kwargs):
-    import termcolor
-
-    if len(args) > 0:
-        args = tuple(termcolor.colored(arg, color=color, attrs=attrs) for arg in args)
-    print(*args, **kwargs)
+from xnodes.nodes.legacy.base import Base
 
 
 @dataclass
 class GelloArgs:
-    agent: str = "gello"  # "none"
+    agent: str = "gello"
     robot_port: int = 6001
-    wrist_camera_port: int = 5000
-    base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
-    robot_type: str = None  # only needed for quest agent or spacemouse agent
+    robot_type: str | None = None
     hz: int = 100
     start_joints: tuple[float, ...] | None = None
+    torque: bool = False
 
     gello_port: str | None = None
     mock: bool = False
@@ -47,106 +35,67 @@ class GelloArgs:
 
 
 class Gello(Base):
-    def __init__(self, args: GelloArgs = GelloArgs(), env=None):
+    def __init__(self, args: GelloArgs | None = None, env: RobotEnv | None = None) -> None:
         super().__init__("gello")
+        args = args or GelloArgs()
         logger = self.get_logger()
         self.env = env
 
-        self.port = args.gello_port
-        if self.port is None:
-            usb_ports = glob.glob("/dev/serial/by-id/*")
-            logger.info(f"Found {len(usb_ports)} ports")
-            if len(usb_ports) > 0:
-                self.port = usb_ports[0]
-                logger.info(f"using port {self.port}")
-            else:
-                msg = "No gello port found, please specify one or plug in gello"
-                raise ValueError(msg)
+        self.port = args.gello_port or self._find_port()
+        logger.info(f"Using port {self.port}")
 
         self.agent = GelloAgent(
             port=self.port,
             start_joints=args.start_joints,
-            # dynamixel_config= DynamixelRobotConfig(),
         )
+        self.agent._robot.set_torque_mode(args.torque)
 
         logger.info("Gello Agent Created.")
 
         self.hz = 50
-        self.loghz = 5
-        self.pub = self.create_publisher(Float32MultiArray, "/gello/state", 10)
+        self.pub = self.create_publisher(JointState, "/gello/state", 10)
         self.timer = self.create_timer(1 / self.hz, self.run)
-        self.i = 0
 
-        self._home = {
-            "angle": [
-                -0.010571539402008057,
-                -0.5,
-                # 0.03834952041506767,
-                -0.09203694015741348,
-                1.5278464555740356,
-                # 1.26,
-                0.06442747265100479,
-                1.428409457206726,
-                -0.20091573894023895,
-                # 3.42691308
-                3.4,
-                # 0.0 # open
-            ],
-            "pose": [
-                502.73455810546875,
-                -34.92372131347656,
-                343.8944396972656,
-                -3.094181776046753,
-                -0.07189014554023743,
-                0.08958626538515091,
-            ],
-        }
-
-        # self.agent._robot.set_torque_mode(True)
-        # self.agent._robot.command_joint_state(np.array(self._home["angle"]))
-        # time.sleep(3)
-        # self.agent._robot.set_torque_mode(False)
-        # time.sleep(2)
-
-        # self.set_active(Bool(data=False))
         logger.info("Gello Node Initialized.")
         self.set_period()
 
-    def run(self):
-        # raw = self._driver.get_joints()
+    def _find_port(self) -> str:
+        usb_ports = sorted(Path("/dev/serial/by-id").glob("*"))
+        self.get_logger().info(f"Found {len(usb_ports)} ports")
+        if usb_ports:
+            return str(usb_ports[0])
+        msg = "No gello port found, please specify one or plug in gello"
+        raise ValueError(msg)
+
+    def run(self) -> None:
         action = self.agent.act()
-
-        logger = self.get_logger()
-        # if self.i % (self.hz/self.loghz) == 0:
-        # self.logp(f"Action: {action.round(2)}")
-
-        msg = Float32MultiArray(data=action)
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = [f"joint{i + 1}" for i in range(len(action))]
+        msg.position = action.tolist()
         self.pub.publish(msg)
 
+        self.get_logger().info(f"{msg.name}")
+        # rad to deg
+        # no scientific notation, round to 2 decimals
+        np.set_printoptions(precision=1, suppress=True)
+        self.get_logger().info(f"{(action)} deg")
+
         if self.env is not None:
-            obs = self.env.step(action)
-
-        self.i += 1
+            self.env.step(action)
 
 
-def build_env(args):
-    # Change this to your own reset joints
-    reset_joints = np.deg2rad([0, -90, 90, -90, -90, 0, 0]) if args.start_joints is None else args.start_joints
+def build_env(args: GelloArgs) -> RobotEnv:
+    reset_joints = args.start_joints
+    if reset_joints is None:
+        reset_joints = np.deg2rad([0, -90, 90, -90, -90, 0, 0])
 
-    camera_clients = {
-        # you can optionally add camera nodes here for imitation learning purposes
-        # "wrist": ZMQClientCamera(port=args.wrist_camera_port, host=args.hostname),
-        # "base": ZMQClientCamera(port=args.base_camera_port, host=args.hostname),
-    }
-
-    # leader
     robot_client = ZMQClientRobot(port=args.robot_port, host=args.hostname)
+    env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict={})
+    obs = env.get_obs()
+    print(obs)
 
-    env = RobotEnv(robot_client, control_rate_hz=args.hz, camera_dict=camera_clients)
-
-    print(env.get_obs())
-
-    curr_joints = env.get_obs()["joint_positions"]
+    curr_joints = obs["joint_positions"]
     if reset_joints.shape == curr_joints.shape:
         max_delta = (np.abs(curr_joints - reset_joints)).max()
         steps = min(int(max_delta / 0.01), 100)
@@ -158,15 +107,7 @@ def build_env(args):
     return env
 
 
-def startup(agent, env, args):
-    robo = agent._robot
-    raw = robo._driver.get_joints()
-    # pprint({"raw": raw})
-    pos = (raw - robo._joint_offsets) * robo._joint_signs
-    # pprint( pos[-1])
-    # quit()
-
-    # going to start position
+def startup(agent: GelloAgent, env: RobotEnv, args: GelloArgs) -> None:
     print("Going to start position")
     start_pos = agent.act()
     print("start_pos", start_pos)
@@ -209,24 +150,21 @@ def startup(agent, env, args):
     action = agent.act()
     if (action - joints > 0.5).any():
         print("Action is too big")
-
-        # print which joints are too big
-        joint_index = np.where(action - joints > 0.8)
-        for j in joint_index:
-            print(f"Joint [{j}], leader: {action[j]}, follower: {joints[j]}, diff: {action[j] - joints[j]}")
+        joint_indices = np.where(action - joints > 0.8)[0]
+        for joint_index in joint_indices:
+            print(
+                f"Joint [{joint_index}], leader: {action[joint_index]}, "
+                f"follower: {joints[joint_index]}, diff: {action[joint_index] - joints[joint_index]}"
+            )
             print(f"leader: {action}")
             print(f"follower: {joints}")
         if args.safety:
-            exit()
+            raise SystemExit(1)
 
 
-@draccus.wrap()
-def main(args: GelloArgs):
+def main(args: GelloArgs) -> None:
     rclpy.init(args=None)
-
-    # env = build_env(args)
     node = Gello(args, env=None)
-    # startup(node.agent, env, args)
 
     try:
         rclpy.spin(node)
@@ -234,8 +172,9 @@ def main(args: GelloArgs):
         node.get_logger().info("Environment Node shutting down...")
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(GelloArgs))
