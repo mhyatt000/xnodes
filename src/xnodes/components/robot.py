@@ -126,7 +126,7 @@ class RobotPolicy:
         self._leader: np.ndarray | None = None  # EMA-smoothed leader joints+grip
         self._act: np.ndarray | None = None  # model/heleo action
         self._grip: float | None = None  # EMA-smoothed normalized grip [0, 1]
-        self._active: bool = False
+        self._active: bool = True
         self._p: int = 0  # ticks since last activation (for velocity ramp)
 
         # EMA constants depend on input mode
@@ -147,8 +147,16 @@ class RobotPolicy:
     def update_joints(self, joints: np.ndarray, joint_names: list[str]) -> None:
         if len(joints) == 6:
             return  # 6-DOF variant from wrong topic; skip
-        self._joints = joints
-        self._joint_names = joint_names
+        jn = dict(zip(joint_names, joints))
+        self._grip = jn.pop("drive_joint", self._grip)
+
+        # pop any other keys that arent joint{i}
+        jn = {n: j for n, j in jn.items() if n.startswith("joint") and n[-1].isdigit()}
+
+        # sort the dict by joint name to ensure consistent ordering; store names separately for output
+        # sort by f'joint{i}' to ensure correct order even if ROS topic ordering changes
+        self._joints = np.array([jn[n] for n in sorted(jn.keys(), key=lambda n: int(n.replace("joint", "")))])
+        self._joint_names = sorted(jn.keys(), key=lambda n: int(n.replace("joint", "")))
 
     def update_pose(self, pose: np.ndarray) -> None:
         self._pose = pose
@@ -190,6 +198,8 @@ class RobotPolicy:
         """
         if self._joints is None or self._leader is None:
             return None
+        if (self._joints == self._leader[:-1]).all():
+            return False  # no movement, so skip
 
         if self.acc.i == 0:
             self.acc.position = self._joints.copy()
@@ -205,19 +215,21 @@ class RobotPolicy:
 
         n = len(self._leader) - 1
         names = [self._joint_names[i] for i in range(n)]
-        return out["position"].tolist(), names, vel.tolist()
+        p = out["position"]
+        delta = (p - self._joints).tolist()
+        return delta, names, vel.tolist()
 
-    def step_cartesian(self) -> list[float] | None:
+    def step_cartesian(self) -> list[float] | None | np.ndarray:
         """Compute Cartesian twist command [lx, ly, lz, ax, ay, az].
 
         Returns 6-element list or None if not ready.
         """
-        if self._act is None or self._pose is None:
-            return None
 
         if self.cfg.input == InputMode.SPACEMOUSE:
-            return list(self._act[:6])
+            return self._act[:6] if self._act is not None else None
 
+        if self._act is None or self._pose is None:
+            return None
         if self.cfg.input == InputMode.HELEO:
             if not self._active:
                 return None
