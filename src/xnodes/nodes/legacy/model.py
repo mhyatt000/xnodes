@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import threading
+import typing
 from typing import Any
 
+from geometry_msgs.msg import TransformStamped
+import jax
 import numpy as np
 import rclpy
 from rich import print
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
+from tf2_ros import Buffer, TransformException, TransformListener
 from webpolicy.client import Client
 from xarm_msgs.msg import RobotMsg
 
@@ -35,6 +39,39 @@ __all__ = [  # bwd compatibility
 ]
 
 
+PyTree: typing.TypeAlias = dict[str, np.ndarray] | list[np.ndarray]
+
+
+def spec(x: PyTree):
+    return jax.tee.map(lambda y: y.shape if isinstance(y, np.ndarray) else type(y), x)
+
+
+class TfLookup:
+    def __init__(self, node: rclpy.node.Node):
+        self._node = node
+        self._buf = Buffer()
+        self._listener = TransformListener(self._buf, node)
+
+    def lookup(self, target: str, source: str, timeout_s: float = 0.1) -> TransformStamped | None:
+        try:
+            return self._buf.lookup_transform(
+                target_frame=target,
+                source_frame=source,
+                time=rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=timeout_s),
+            )
+        except TransformException as err:
+            self._node.get_logger().warn(f"TF lookup failed ({source} -> {target}): {err}")
+            return None
+
+    def xyz(self, target: str, source: str, timeout_s: float = 0.1) -> tuple[float, float, float] | None:
+        tf = self.lookup(target, source, timeout_s)
+        if tf is None:
+            return None
+        t = tf.transform.translation
+        return t.x, t.y, t.z
+
+
 class Model(Base):
     """Recieves action from model server"""
 
@@ -45,6 +82,9 @@ class Model(Base):
         self.joints: np.ndarray | None = None
         self.pose: np.ndarray | None = None
         self.gripper: np.ndarray | None = None
+        self._last_joint_len: int | None = None
+        self._last_joint_warning: str | None = None
+        self._accepted_joint_stream = False
 
         default_cfg = NOMODEL if cfg is None else cfg
         host = str(self.declare_parameter("host", default_cfg.host).value)
@@ -64,7 +104,8 @@ class Model(Base):
         self.req_hz = float(self.declare_parameter("req_hz", 20.0).value)  # request from server frequency
         self.cmd_hz = float(self.declare_parameter("cmd_hz", 100.0).value)  # command frequency
         self.resolution = int(self.declare_parameter("resolution", 1).value)  # every N predicted steps
-        self.joint_topic = str(self.declare_parameter("joint_topic", "/xarm/joint_states").value)
+        self.arm_dof = int(self.declare_parameter("arm_dof", 7).value)
+        self.joint_topic = str(self.declare_parameter("joint_topic", "/joint_states").value)
         self.pose_topic = str(self.declare_parameter("pose_topic", "/xarm/robot_states").value)
         self.gripper_topic = str(self.declare_parameter("gripper_topic", "/xgym/gripper").value)
         self.state_topic = str(self.declare_parameter("state_topic", "/gello/state").value)
@@ -73,10 +114,13 @@ class Model(Base):
             raise ValueError("req_hz and cmd_hz must be > 0")
         if self.resolution <= 0:
             raise ValueError("resolution must be > 0")
+        if self.arm_dof <= 0:
+            raise ValueError("arm_dof must be > 0")
 
         self.data: dict[str, np.ndarray] = {}
         self.build_cam_subs()
 
+        self.get_logger().info(f"client->server at {self.cfg.host}:{self.cfg.port} ...")
         self.policy = Client(host=self.cfg.host, port=self.cfg.port)
         # self.policy.reset()
         self._reset = True
@@ -84,12 +128,17 @@ class Model(Base):
         self.targets = None
 
         self.logger.info("Model Client Initialized.")
+        self.logger.info(
+            f"Subscribing: joints={self.joint_topic}, pose={self.pose_topic}, gripper={self.gripper_topic}"
+        )
+        self.tf = TfLookup(self)
 
         self.moveit_sub = self.create_subscription(JointState, self.joint_topic, self.set_joints, 10)
-        self.moveit_pose_sub = self.create_subscription(RobotMsg, self.pose_topic, self.set_pose, 10)
+        # self.moveit_pose_sub = self.create_subscription(RobotMsg, self.pose_topic, self.set_pose, 10)
+        self.moveit_pose_t = self.create_timer(0.1, self.request_pose)  # polling tf for pose
         self.gripper_sub = self.create_subscription(Float32MultiArray, self.gripper_topic, self.set_gripper, 10)
         self.step_timer = self.create_timer(1 / self.req_hz, self.step)
-        self.publisher = self.create_publisher(Float32MultiArray, self.state_topic, 10)
+        self.publisher = self.create_publisher(JointState, self.state_topic, 10)
         self.command_timer = self.create_timer(1 / self.cmd_hz, self.command)
 
     @property
@@ -104,6 +153,14 @@ class Model(Base):
             self.pose = None
             self.gripper = None
             self.targets = None
+
+    def request_pose(self):
+        pose = self.tf.xyz("world", "link_tcp")
+        if pose is not None:
+            msg = RobotMsg()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.pose = list(pose) + [0.0] * 3  # pad to 6dof
+            self.set_pose(msg)
 
     def set_image(self, msg, key):
         frame = self.bridge.compressed_imgmsg_to_cv2(msg)
@@ -133,13 +190,34 @@ class Model(Base):
             velocity: List[float64]
             effort: List[float64]
         """
+        joints = np.asarray(msg.position, dtype=np.float32)
+        names = list(msg.name)
 
-        if len(msg.position) == 6:
-            self.logger.error("Received JointState with 6 joints; shutting down node.")
-            rclpy.shutdown()
+        if len(joints) != self.arm_dof and names:
+            joint_map = dict(zip(names, joints, strict=False))
+            arm_names = [f"joint{i + 1}" for i in range(self.arm_dof)]
+            if all(name in joint_map for name in arm_names):
+                joints = np.asarray([joint_map[name] for name in arm_names], dtype=np.float32)
+
+        n_joints = len(joints)
+        if n_joints != self.arm_dof:
+            warning = (
+                f"Ignoring JointState on {self.joint_topic}: expected {self.arm_dof} arm joints, "
+                f"got {n_joints} names={names}."
+            )
+            if self._last_joint_warning != warning:
+                self.logger.warn(warning)
+                self._last_joint_warning = warning
+                self._last_joint_len = n_joints
             return
+
         with self._lock:
-            self.joints = np.array(msg.position).astype(np.float32)
+            self.joints = joints
+            self._last_joint_len = n_joints
+            self._last_joint_warning = None
+        if not self._accepted_joint_stream:
+            self.logger.info(f"Accepted JointState from {self.joint_topic} with {n_joints} arm joints.")
+            self._accepted_joint_stream = True
         # self.joint_names = msg.name
 
     def step(self):
@@ -149,9 +227,13 @@ class Model(Base):
             gripper = None if self.gripper is None else self.gripper.copy()
             active = self.active
             reset = self._reset
+            self.logger.debug("enter step")
             imgs = extract_camera_images(self.data)
 
         if any(x is None for x in [joints, pose, gripper]):
+            self.logger.info(
+                f"Waiting for data... pose={pose is not None}, joints={joints is not None}, gripper={gripper is not None}"
+            )
             return
 
         if active is False:
@@ -180,6 +262,7 @@ class Model(Base):
             self.logger.info(f"Payload error: {exc}")
             return
 
+        self.logger.debug(f"Policy payload: joints={spec(payload)}")
         actions: dict[str, Any] = self.policy.step(payload)
         try:
             targets = extract_action_targets(actions, resolution=self.resolution)
@@ -205,8 +288,10 @@ class Model(Base):
                     return
                 target = build_idle_target(joints, gripper)
 
-        msg = Float32MultiArray()
-        msg.data = target.tolist()
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = [f"joint{i + 1}" for i in range(len(target))]
+        msg.position = target.tolist()
         self.publisher.publish(msg)
 
 
