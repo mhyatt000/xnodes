@@ -3,10 +3,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
+from control_msgs.action import GripperCommand
+from rclpy.action import ActionClient
 from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
 from xarm_msgs.srv import Call, GetFloat32, GripperMove, SetFloat32, SetInt16
 
-from xnodes.components.robot import RobotBackend, RobotConfig
+from xnodes.components.robot import RobotBackend, RobotConfig, RobotPolicy
+from xnodes.nodes.legacy.active import ActiveFlag
 
 
 class RobotDriver(Protocol):
@@ -27,6 +31,8 @@ class RobotDriver(Protocol):
     def set_mode(self, mode: int) -> int: ...
 
     def clean_error(self) -> None: ...
+
+    def clean_gripper_error(self) -> None: ...
 
     def clean_warn(self) -> None: ...
 
@@ -66,6 +72,9 @@ class FakeXArm:
     def clean_error(self) -> None:
         pass
 
+    def clean_gripper_error(self) -> None:
+        pass
+
     def clean_warn(self) -> None:
         pass
 
@@ -88,7 +97,6 @@ class ServiceXArm:
     ros2 service call /xarm/clean_gripper_error xarm_msgs/srv/Call "{}"
 
     ros2 action send_goal /xarm_gripper/gripper_action control_msgs/action/GripperCommand "{command: {position: 0.5, max_effort: 0.0}}"
-    ros2 action send_goal /bio_gripper/gripper_action control_msgs/action/GripperCommand "{command: {position: -0.02, max_effort: 0.0}}"
     """
 
     def __init__(self, node: Node, cfg: RobotConfig) -> None:
@@ -105,11 +113,16 @@ class ServiceXArm:
         self._set_gripper_speed = self._client(SetFloat32, "set_gripper_speed")
         self._get_gripper_position = self._client(GetFloat32, "get_gripper_position")
         self._set_gripper_position = self._client(GripperMove, "set_gripper_position")
+        self._clean_gripper_error = self._client(Call, "clean_gripper_error")
         self._set_state = self._client(SetInt16, "set_state")
         self._set_mode = self._client(SetInt16, "set_mode")
         self._clean_error = self._client(Call, "clean_error")
         self._clean_warn = self._client(Call, "clean_warn")
         self._motion_enable = self._client(SetInt16, "motion_enable")
+        self._gripper_action = ActionClient(node, GripperCommand, "/xarm_gripper/gripper_action")
+        if not self._gripper_action.wait_for_server(timeout_sec=self._timeout_s):
+            msg = f"Action /xarm_gripper/gripper_action unavailable after {self._timeout_s:.1f}s"
+            raise RuntimeError(msg)
 
     def connect(self) -> None:
         self._node.get_logger().info(f"Using ROS service backend in namespace {self._ns}")
@@ -134,11 +147,13 @@ class ServiceXArm:
         return int(resp.ret), float(resp.data)
 
     def set_gripper_position(self, pos: float, wait: bool = True) -> None:
-        req = GripperMove.Request()
-        req.pos = float(pos)
-        req.wait = wait
-        req.timeout = self._move_timeout_s
-        self._call(self._set_gripper_position, req, "set_gripper_position")
+        goal = GripperCommand.Goal()
+        goal.command.position = self._hardware_to_action_position(float(pos))
+        goal.command.max_effort = 0.0
+        if wait:
+            self._gripper_action.send_goal(goal)
+        else:
+            self._gripper_action.send_goal_async(goal)
 
     def set_state(self, state: int = 0) -> int:
         req = SetInt16.Request()
@@ -150,8 +165,15 @@ class ServiceXArm:
         req.data = int(mode)
         return int(self._call(self._set_mode, req, "set_mode").ret)
 
-    def clean_error(self) -> None:
+    def clean_robot_error(self) -> None:
         self._call(self._clean_error, Call.Request(), "clean_error")
+
+    def clean_gripper_error(self) -> None:
+        self._call(self._clean_gripper_error, Call.Request(), "clean_gripper_error")
+
+    def clean_error(self) -> None:
+        self.clean_robot_error()
+        self.clean_gripper_error()
 
     def clean_warn(self) -> None:
         self._call(self._clean_warn, Call.Request(), "clean_warn")
@@ -163,6 +185,14 @@ class ServiceXArm:
 
     def _service_name(self, name: str) -> str:
         return f"{self._ns}/{name}"
+
+    def _hardware_to_action_position(self, pos: float) -> float:
+        # xArm gripper service positions use 0..850 with 0 closed, 850 open.
+        # The action uses the inverse virtual joint convention: ~0.0 open, ~0.86 closed.
+        grip_max = 850.0
+        closed_rad = 0.86
+        norm_open = max(0.0, min(pos / grip_max, 1.0))
+        return (1.0 - norm_open) * closed_rad
 
     def _client(self, srv_type, name: str):
         service_name = self._service_name(name)
@@ -194,10 +224,53 @@ def create_robot_driver(node: Node, cfg: RobotConfig) -> RobotDriver:
 
             return XArmAPI(cfg.ip, is_radian=True)
         case RobotBackend.AUTO:
-            if cfg.ip is None:
-                return FakeXArm()
-            from xarm.wrapper import XArmAPI
-
-            return XArmAPI(cfg.ip, is_radian=True)
+            return ServiceXArm(node, cfg)
         case _:
             raise ValueError(f"Unsupported backend: {cfg.backend}")
+
+
+class GripperController:
+    """Own gripper backend wiring, setup, recovery, and periodic command flow."""
+
+    def __init__(
+        self,
+        node: Node,
+        cfg: RobotConfig,
+        policy: RobotPolicy,
+        activator: ActiveFlag,
+        driver_plugin: RobotDriverPlugin | None = None,
+    ) -> None:
+        self._node = node
+        self._cfg = cfg
+        self._policy = policy
+        self._activator = activator
+        self._driver = (driver_plugin or create_robot_driver)(node, cfg)
+        self._driver.connect()
+
+        self._pub = None
+        self._timer = None
+        if cfg.use_gripper:
+            self._pub = node.create_publisher(Float32MultiArray, "/xgym/gripper", 10)
+            self._timer = node.create_timer(1 / cfg.grip_hz, self._grip_tick)
+            self.setup()
+            activator.add_listener(lambda _active: self._driver.clean_gripper_error())
+
+    @property
+    def driver(self) -> RobotDriver:
+        return self._driver
+
+    def setup(self) -> None:
+        if not self._cfg.use_gripper:
+            return
+        self._driver.set_gripper_enable(True)
+        self._driver.set_gripper_mode(0)
+        self._driver.set_gripper_speed(self._cfg.grip_speed)
+
+    def _grip_tick(self) -> None:
+        code, grip_raw = self._driver.get_gripper_position()
+        if code or grip_raw is None or self._pub is None:
+            return
+        self._pub.publish(Float32MultiArray(data=[grip_raw / self._cfg.grip_max]))
+        cmd = self._policy.step_gripper(grip_raw)
+        if cmd is not None:
+            self._driver.set_gripper_position(cmd, wait=False)

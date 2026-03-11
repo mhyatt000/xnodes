@@ -7,6 +7,7 @@ from xnodes.components.robot import (
     AccelConfigFactory,
     ControlMode,
     InputMode,
+    RobotBackend,
     RobotConfig,
     RobotPolicy,
 )
@@ -47,6 +48,12 @@ class TestRobotConfig:
         assert cfg.grip_max == 850
         assert cfg.grip_bins == 30
         assert cfg.cart_scale == 0.05
+        assert cfg.backend == RobotBackend.AUTO
+        assert cfg.service_ns == "/xarm"
+
+    def test_sdk_backend_requires_ip(self) -> None:
+        with pytest.raises(AssertionError):
+            RobotConfig(ip=None, backend=RobotBackend.SDK)
 
     def test_accel_factory_creates_accelerator(self) -> None:
         factory = AccelConfigFactory(a_max=10.0, kp=100.0, kd=5.0)
