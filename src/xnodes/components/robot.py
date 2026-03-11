@@ -59,6 +59,13 @@ class ControlMode(StrEnum):
     CARTESIAN = "cartesian"
 
 
+class RobotBackend(StrEnum):
+    AUTO = "auto"
+    SDK = "sdk"
+    SERVICE = "service"
+    FAKE = "fake"
+
+
 @dataclass
 class AccelConfigFactory:
     """Factory for Accelerator instances."""
@@ -77,19 +84,28 @@ class RobotConfig:
     dof: int = 7  # degrees of freedom
     input: InputMode = InputMode.GELLO  # input device
     ctrl: ControlMode = ControlMode.JOINT  # control mode
+    backend: RobotBackend = RobotBackend.AUTO  # hardware backend selection
     use_gripper: bool = True
     hz: int = 200  # command frequency (Hz)
     grip_hz: int = 50  # gripper poll frequency (Hz)
+    grip_speed: int = 5000  # gripper speed in hardware units
     acc: AccelConfigFactory = field(default_factory=AccelConfigFactory)
     cart_scale: float = 0.05  # Cartesian velocity clipping bound per tick
     grip_bins: int = 30  # gripper discretization bins (MODEL mode only)
     grip_max: int = 850  # maximum gripper position in hardware units
+    service_ns: str = "/xarm"  # ROS service namespace for the service backend
+    service_wait_s: float = 2.0  # wait timeout for robot service availability
 
     def __post_init__(self) -> None:
         if self.input == InputMode.SPACEMOUSE:
             assert self.ctrl == ControlMode.CARTESIAN, "spacemouse only works with cartesian control"
         if self.input == InputMode.GELLO:
             assert self.ctrl == ControlMode.JOINT, "gello only works with joint control"
+        if self.backend == RobotBackend.SDK:
+            assert self.ip is not None, "sdk backend requires a robot IP"
+        assert self.grip_speed > 0, "grip_speed must be > 0"
+        assert self.service_ns.strip(), "service_ns must be non-empty"
+        assert self.service_wait_s > 0, "service_wait_s must be > 0"
 
 
 @dataclass
