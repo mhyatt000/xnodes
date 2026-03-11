@@ -14,9 +14,14 @@ class ActiveFlag:
         node: Node,
         topic: str = "/xgym/active",
         initial: bool = False,
+        toggle: bool = False,
         on_change: Callable[[bool], None] | None = None,
     ):
         self._active = initial
+        # toggle_default = False if toggle is None else toggle
+        # self._toggle = bool(node.declare_parameter("toggle", toggle_default).value)
+        self._toggle = toggle
+        self._last_flag = initial
         self._hooks: list[Callable[[bool], None]] = []
         if on_change is not None:
             self._hooks.append(on_change)
@@ -42,4 +47,9 @@ class ActiveFlag:
             hook(active)
 
     def _on_active(self, msg: Bool) -> None:
-        self.set(msg.data)
+        if self._toggle:
+            if msg.data and not self._last_flag:
+                self.set(not self.active)
+        else:
+            self.set(msg.data)
+        self._last_flag = msg.data
