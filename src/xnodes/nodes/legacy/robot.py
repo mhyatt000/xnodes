@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-
 from control_msgs.msg import JointJog
 from geometry_msgs.msg import TwistStamped
 import numpy as np
@@ -14,7 +12,7 @@ from xarm_msgs.msg import RobotMsg
 
 from xnodes.components.robot import ControlMode, HOME, RobotConfig, RobotPolicy
 from xnodes.nodes.legacy.active import ActiveFlag
-from xnodes.nodes.legacy.gripper import create_robot_driver, RobotDriverPlugin
+from xnodes.nodes.legacy.gripper import GripperController, RobotDriverPlugin
 
 
 class Xarm(Node):
@@ -29,22 +27,12 @@ class Xarm(Node):
         super().__init__("xarm_robot")
         self.cfg = cfg
         self.hz = cfg.hz
-        self.griphz = cfg.grip_hz
-
-        self.robot = (driver_plugin or create_robot_driver)(self, cfg)
-        self.get_logger().info(f"Initializing robot with backend={cfg.backend}.")
-        self.robot.connect()
-        self.mode = 1
-
-        if cfg.use_gripper:
-            self.robot.set_gripper_enable(True)
-            self.robot.set_gripper_mode(0)
-            self.robot.set_gripper_speed(cfg.grip_speed)
-        self.get_logger().info("Robot initialized.")
 
         self.policy = RobotPolicy(cfg, HOME)
         self.activator = activator if activator is not None else ActiveFlag(self)
-        self.activator.add_listener(self._sync_active)
+        self.activator.add_listener(self.policy.on_active)
+        self.gripper = GripperController(self, cfg, self.policy, self.activator, driver_plugin=driver_plugin)
+        self.get_logger().info(f"Initialized robot backend={cfg.backend}.")
 
         # Subscriptions
         self.create_subscription(Float32MultiArray, "/robot_commands", self._on_command, 10)
@@ -60,15 +48,7 @@ class Xarm(Node):
 
         self.timer = self.create_timer(1 / cfg.hz, self._tick)
 
-        if cfg.use_gripper:
-            self.gripper_pub = self.create_publisher(Float32MultiArray, "/xgym/gripper", 10)
-            self.gtimer = self.create_timer(1 / cfg.grip_hz, self._grip_tick)
-
         self.get_logger().info("Robot Node Initialized.")
-
-    def _sync_active(self, active: bool) -> None:
-        self.policy.on_active(active)  # TODO maybe deprecate?
-        self._clear_error_states()
 
     @property
     def logger(self):
@@ -153,39 +133,6 @@ class Xarm(Node):
                 msg.twist.angular.y = result[4]
                 msg.twist.angular.z = result[5]
                 self.twist_pub.publish(msg)
-
-    def _grip_tick(self) -> None:
-        """Gripper control loop: read hardware position and apply policy command."""
-        code, grip_raw = self.robot.get_gripper_position()
-        if code or grip_raw is None:
-            return
-        self.gripper_pub.publish(Float32MultiArray(data=[grip_raw / self.cfg.grip_max]))
-        cmd = self.policy.step_gripper(grip_raw)
-        if cmd is not None:
-            self.robot.set_gripper_position(cmd, wait=False)
-
-    def _clear_error_states(self) -> None:
-        if self.robot is None:
-            return
-        time.sleep(0.1)
-        print(self.robot.set_state(state=0))
-        print(self.robot.set_mode(1))
-        time.sleep(0.1)
-        self.robot.clean_error()
-        self.robot.clean_warn()
-        self.robot.motion_enable(True)
-        time.sleep(0.1)
-        self.robot.set_mode(1)
-        time.sleep(0.1)
-        self.robot.set_state(state=0)
-        time.sleep(0.1)
-        if self.cfg.use_gripper:
-            self.robot.set_gripper_enable(True)
-            time.sleep(0.1)
-            self.robot.set_gripper_mode(0)
-            time.sleep(0.1)
-            self.robot.set_gripper_speed(self.cfg.grip_speed)
-            time.sleep(0.1)
 
 
 def run(cfg: RobotConfig | None = None) -> None:
