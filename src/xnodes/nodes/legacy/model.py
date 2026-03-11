@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from functools import partial
 import threading
 import typing
 from typing import Any
 
+from cv_bridge import CvBridge
 from geometry_msgs.msg import TransformStamped
 import jax
 import numpy as np
 import rclpy
+from rclpy.qos import qos_profile_sensor_data
 from rich import print
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32MultiArray
 from tf2_ros import Buffer, TransformException, TransformListener
 from webpolicy.client import Client
@@ -19,8 +22,10 @@ from xnodes.core.model_client import (
     ActionRepresentation,
     build_idle_target,
     build_policy_payload,
+    CAMERA_KEYS,
+    CAMERA_POSTFIX,
+    CAMERA_PREFIX,
     extract_action_targets,
-    extract_camera_images,
     missing_camera_images,
     ModelClientConfig,
     NOMODEL,
@@ -43,7 +48,7 @@ PyTree: typing.TypeAlias = dict[str, np.ndarray] | list[np.ndarray]
 
 
 def spec(x: PyTree):
-    return jax.tee.map(lambda y: y.shape if isinstance(y, np.ndarray) else type(y), x)
+    return jax.tree.map(lambda y: y.shape if isinstance(y, np.ndarray) else type(y), x)
 
 
 class TfLookup:
@@ -72,10 +77,46 @@ class TfLookup:
         return t.x, t.y, t.z
 
 
+class CameraStreams:
+    def __init__(self, node: rclpy.node.Node, topics: dict[str, str]):
+        self._node = node
+        self._topics = topics
+        self._lock = threading.Lock()
+        self._bridge = CvBridge()
+        self._frames: dict[str, np.ndarray | None] = dict.fromkeys(topics)
+        self._seen: set[str] = set()
+        self._subs = {
+            key: node.create_subscription(
+                Image,
+                topic,
+                partial(self._set_image, key=key),
+                qos_profile_sensor_data,
+            )
+            for key, topic in topics.items()
+        }
+        node.get_logger().info(f"Camera Streams: {self._topics}")
+
+    @property
+    def topics(self) -> dict[str, str]:
+        return self._topics
+
+    def snapshot(self) -> dict[str, np.ndarray | None]:
+        with self._lock:
+            return {key: None if frame is None else frame.copy() for key, frame in self._frames.items()}
+
+    def _set_image(self, msg: Image, key: str) -> None:
+        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        with self._lock:
+            self._frames[key] = frame
+        if key not in self._seen:
+            self._node.get_logger().info(f"Accepted image stream {key} from {self._topics[key]}")
+            self._seen.add(key)
+
+
 class Model(Base):
     """Recieves action from model server"""
 
-    def __init__(self, cfg: ModelClientConfig | None = None):
+    def __init__(self, cfg: ModelClientConfig | None = None, cameras: CameraStreams | None = None):
         super().__init__("model")
         self._lock = threading.Lock()
 
@@ -110,6 +151,24 @@ class Model(Base):
         self.gripper_topic = str(self.declare_parameter("gripper_topic", "/xgym/gripper").value)
         self.state_topic = str(self.declare_parameter("state_topic", "/gello/state").value)
 
+        self.camera_topics = {
+            key: str(
+                self.declare_parameter(
+                    f"{key}_camera_topic",
+                    f"{CAMERA_PREFIX}/{key}/{CAMERA_POSTFIX}",
+                ).value
+            )
+            for key in CAMERA_KEYS
+        }
+        self.camera_topics |= {
+            "wrist": str(
+                self.declare_parameter(
+                    "wrist_camera_topic",
+                    "/camera/camera/color/image_raw",
+                ).value
+            )
+        }
+
         if self.req_hz <= 0 or self.cmd_hz <= 0:
             raise ValueError("req_hz and cmd_hz must be > 0")
         if self.resolution <= 0:
@@ -117,19 +176,17 @@ class Model(Base):
         if self.arm_dof <= 0:
             raise ValueError("arm_dof must be > 0")
 
-        self.data: dict[str, np.ndarray] = {}
-        self.build_cam_subs()
-
         self.get_logger().info(f"client->server at {self.cfg.host}:{self.cfg.port} ...")
         self.policy = Client(host=self.cfg.host, port=self.cfg.port)
         # self.policy.reset()
         self._reset = True
 
         self.targets = None
+        self.cameras = cameras if cameras is not None else CameraStreams(self, self.camera_topics)
 
         self.logger.info("Model Client Initialized.")
         self.logger.info(
-            f"Subscribing: joints={self.joint_topic}, pose={self.pose_topic}, gripper={self.gripper_topic}"
+            f"Subscribing: joints={self.joint_topic}, pose={self.pose_topic}, gripper={self.gripper_topic}, cameras={self.cameras.topics}"
         )
         self.tf = TfLookup(self)
 
@@ -161,11 +218,6 @@ class Model(Base):
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.pose = list(pose) + [0.0] * 3  # pad to 6dof
             self.set_pose(msg)
-
-    def set_image(self, msg, key):
-        frame = self.bridge.compressed_imgmsg_to_cv2(msg)
-        with self._lock:
-            self.data[key] = frame
 
     def set_gripper(self, msg: Float32MultiArray):
         with self._lock:
@@ -227,8 +279,9 @@ class Model(Base):
             gripper = None if self.gripper is None else self.gripper.copy()
             active = self.active
             reset = self._reset
-            self.logger.debug("enter step")
-            imgs = extract_camera_images(self.data)
+            self.logger.info("enter step")
+        imgs = self.cameras.snapshot()
+        self.logger.info(f"snapshot got: {spec(imgs)}")
 
         if any(x is None for x in [joints, pose, gripper]):
             self.logger.info(
@@ -236,6 +289,7 @@ class Model(Base):
             )
             return
 
+        """
         if active is False:
             if not reset:
                 self.policy.reset()
@@ -244,10 +298,12 @@ class Model(Base):
             with self._lock:
                 self.targets = [build_idle_target(joints, gripper)]
             return
+        """
 
         missing = missing_camera_images(imgs)
         if missing:
-            self.logger.info(f"Missing images: {missing}")
+            missing_topics = {key: self.cameras.topics[key] for key in missing}
+            self.logger.info(f"Missing images: {missing_topics}")
             return
 
         try:
@@ -258,11 +314,14 @@ class Model(Base):
                 images={k: v for k, v in imgs.items() if v is not None},
                 ensemble=self.cfg.ensemble,
             )
+            payload["observation"]["proprio_single"] = payload["observation"].pop("proprio_single_arm")[
+                ..., : self.arm_dof + 1
+            ]  # trim to expected arm dof
         except ValueError as exc:
             self.logger.info(f"Payload error: {exc}")
             return
 
-        self.logger.debug(f"Policy payload: joints={spec(payload)}")
+        self.logger.info(f"Policy payload: joints={spec(payload)}")
         actions: dict[str, Any] = self.policy.step(payload)
         try:
             targets = extract_action_targets(actions, resolution=self.resolution)

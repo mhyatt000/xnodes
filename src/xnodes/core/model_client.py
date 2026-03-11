@@ -7,8 +7,9 @@ from typing import Any, Mapping
 
 import numpy as np
 
-CAMERA_PREFIX = "/xgym/camera/"
-CAMERA_KEYS = ("low", "side", "wrist")
+CAMERA_PREFIX = "/cam"
+CAMERA_KEYS = ("low", "side")  # "wrist"
+CAMERA_POSTFIX = "image_raw"
 
 
 class ActionRepresentation(Enum):

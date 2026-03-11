@@ -23,6 +23,9 @@ TEST_JOINT_TOPIC = "/test/joint_states"
 TEST_POSE_TOPIC = "/test/xarm/robot_states"
 TEST_GRIPPER_TOPIC = "/test/xgym/gripper"
 TEST_STATE_TOPIC = "/test/gello/state"
+TEST_LOW_CAMERA_TOPIC = "/test/xgym/camera/low"
+TEST_SIDE_CAMERA_TOPIC = "/test/xgym/camera/side"
+TEST_WRIST_CAMERA_TOPIC = "/test/xgym/camera/wrist"
 TEST_PARAMS_FILE = Path("/tmp/xnodes_model_test_params.yaml")
 
 
@@ -38,6 +41,9 @@ def generate_test_description():
                 f"    pose_topic: {TEST_POSE_TOPIC}",
                 f"    gripper_topic: {TEST_GRIPPER_TOPIC}",
                 f"    state_topic: {TEST_STATE_TOPIC}",
+                f"    low_camera_topic: {TEST_LOW_CAMERA_TOPIC}",
+                f"    side_camera_topic: {TEST_SIDE_CAMERA_TOPIC}",
+                f"    wrist_camera_topic: {TEST_WRIST_CAMERA_TOPIC}",
             ]
         )
         + "\n"

@@ -8,7 +8,10 @@ model:
     req_hz: 20.0
     cmd_hz: 100.0
     resolution: 1
-    joint_topic: /xarm/joint_states
+    joint_topic: /joint_states
     pose_topic: /xarm/robot_states
     gripper_topic: /xgym/gripper
     state_topic: /gello/state
+    low_camera_topic: /cam/low/image_raw
+    side_camera_topic: /cam/side/image_raw
+    wrist_camera_topic: /camera/camera/color/image_raw # wrist
