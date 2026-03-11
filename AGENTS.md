@@ -24,6 +24,15 @@ pixi run ros2 run xnodes model
 
 to see the defined pixi tasks use `pixi run` with no args
 
+## ruff
+Prefer `uvx ruff ...` over other invocations of ruff
+
+## Workspace sync
+this repo is often synced or symlinked into the ROS workspace install/use path, and commands may import the
+workspace-installed `xnodes` package instead of the checkout you are editing. Do not set `PYTHONPATH`
+manually to work around that. Prefer rebuilding/resyncing the workspace so runtime verification uses the
+intended code.
+
 ## ros bags
 
 many nodes in the `legacy` folder are getting transitioned to production. Writer node truly is
