@@ -219,12 +219,10 @@ def create_robot_driver(node: Node, cfg: RobotConfig) -> RobotDriver:
             return FakeXArm()
         case RobotBackend.SERVICE:
             return ServiceXArm(node, cfg)
-        case RobotBackend.SDK:
+        case RobotBackend.SDK | RobotBackend.AUTO:
             from xarm.wrapper import XArmAPI
 
             return XArmAPI(cfg.ip, is_radian=True)
-        case RobotBackend.AUTO:
-            return ServiceXArm(node, cfg)
         case _:
             raise ValueError(f"Unsupported backend: {cfg.backend}")
 
@@ -256,6 +254,10 @@ class GripperController:
             activator.add_hook(lambda _active: self._driver.clean_gripper_error())
 
     @property
+    def logger(self):
+        return self._node.get_logger()
+
+    @property
     def driver(self) -> RobotDriver:
         return self._driver
 
@@ -272,5 +274,7 @@ class GripperController:
             return
         self._pub.publish(Float32MultiArray(data=[grip_raw / self._cfg.grip_max]))
         cmd = self._policy.step_gripper(grip_raw)
+        # cmd = grip_raw +( random.random() -0.5)*50
+        self.logger.info(f"grip_tick: raw={grip_raw:.1f} cmd={cmd}")
         if cmd is not None:
             self._driver.set_gripper_position(cmd, wait=False)
