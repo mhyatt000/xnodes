@@ -79,6 +79,14 @@ class AccelConfigFactory:
 
 
 @dataclass
+class GripperConfig:
+    bins: int = 50  # discretization bins for model-based gripper control
+    maximum: int = 850  # maximum gripper position in hardware units
+    hz: int = 10  # gripper command frequency (Hz)
+    speed: int = 2000  # gripper speed in hardware units
+
+
+@dataclass
 class RobotConfig:
     ip: str | None = "192.168.1.231"  # robot IP address; None → FakeXArm
     dof: int = 7  # degrees of freedom
@@ -87,11 +95,11 @@ class RobotConfig:
     backend: RobotBackend = RobotBackend.AUTO  # hardware backend selection
     use_gripper: bool = True
     hz: int = 200  # command frequency (Hz)
-    grip_hz: int = 50  # gripper poll frequency (Hz)
-    grip_speed: int = 5000  # gripper speed in hardware units
+    grip_hz: int = 10  # gripper poll frequency (Hz)
+    grip_speed: int = 2000  # gripper speed in hardware units
     acc: AccelConfigFactory = field(default_factory=AccelConfigFactory)
     cart_scale: float = 0.05  # Cartesian velocity clipping bound per tick
-    grip_bins: int = 30  # gripper discretization bins (MODEL mode only)
+    grip_bins: int = 50  # gripper discretization bins (MODEL mode only)
     grip_max: int = 850  # maximum gripper position in hardware units
     service_ns: str = "/xarm"  # ROS service namespace for the service backend
     service_wait_s: float = 2.0  # wait timeout for robot service availability
@@ -267,8 +275,8 @@ class RobotPolicy:
         :param grip_raw: current gripper position from hardware [0, grip_max]
         :returns: gripper command, or None to skip
         """
-        if not self._active:
-            return self.cfg.grip_max  # fully open when inactive
+        # if not self._active:
+        # return self.cfg.grip_max  # fully open when inactive
 
         grip_norm = grip_raw / self.cfg.grip_max
         if self._grip is None:
