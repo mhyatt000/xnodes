@@ -2,24 +2,29 @@
 from __future__ import annotations
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess
-from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
-    path = LaunchConfiguration("path")
+    params_file = LaunchConfiguration("params_file")
 
-    footpedal = ExecuteProcess(
-        cmd=["python3", "-m", "xnodes.nodes.legacy.footpedal", "--path", path],
+    footpedal = Node(
+        package="xnodes",
+        executable="footpedal",
         output="screen",
+        emulate_tty=True,
+        parameters=[params_file],
     )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                "path",
-                default_value="/dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd",
-                description="Foot pedal evdev device path",
+                "params_file",
+                default_value=PathJoinSubstitution([FindPackageShare("xnodes"), "config", "pedal.yaml"]),
+                description="Foot pedal ROS parameter file",
             ),
             footpedal,
         ]
