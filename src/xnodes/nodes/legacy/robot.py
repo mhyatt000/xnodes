@@ -30,7 +30,7 @@ class Xarm(Node):
 
         self.policy = RobotPolicy(cfg, HOME)
         self.activator = activator if activator is not None else ActiveFlag(self)
-        self.activator.add_listener(self.policy.on_active)
+        self.activator.add_hook(self.policy.on_active)
         self.gripper = GripperController(self, cfg, self.policy, self.activator, driver_plugin=driver_plugin)
         self.get_logger().info(f"Initialized robot backend={cfg.backend}.")
 

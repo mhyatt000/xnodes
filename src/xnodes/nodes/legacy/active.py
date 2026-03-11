@@ -17,9 +17,9 @@ class ActiveFlag:
         on_change: Callable[[bool], None] | None = None,
     ):
         self._active = initial
-        self._listeners: list[Callable[[bool], None]] = []
+        self._hooks: list[Callable[[bool], None]] = []
         if on_change is not None:
-            self._listeners.append(on_change)
+            self._hooks.append(on_change)
         self.publisher = node.create_publisher(Bool, topic, 10)
         self.subscription = node.create_subscription(Bool, topic, self._on_active, 10)
 
@@ -27,16 +27,19 @@ class ActiveFlag:
     def active(self) -> bool:
         return self._active
 
+    def add_hook(self, hook: Callable[[bool], None]) -> None:
+        self._hooks.append(hook)
+
     def add_listener(self, listener: Callable[[bool], None]) -> None:
-        self._listeners.append(listener)
+        self.add_hook(listener)
 
     def publish(self, active: bool) -> None:
         self.publisher.publish(Bool(data=active))
 
     def set(self, active: bool) -> None:
         self._active = active
-        for listener in self._listeners:
-            listener(active)
+        for hook in self._hooks:
+            hook(active)
 
     def _on_active(self, msg: Bool) -> None:
         self.set(msg.data)

@@ -253,7 +253,7 @@ class GripperController:
             self._pub = node.create_publisher(Float32MultiArray, "/xgym/gripper", 10)
             self._timer = node.create_timer(1 / cfg.grip_hz, self._grip_tick)
             self.setup()
-            activator.add_listener(lambda _active: self._driver.clean_gripper_error())
+            activator.add_hook(lambda _active: self._driver.clean_gripper_error())
 
     @property
     def driver(self) -> RobotDriver:
