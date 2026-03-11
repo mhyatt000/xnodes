@@ -6,88 +6,52 @@ from control_msgs.msg import JointJog
 from geometry_msgs.msg import TwistStamped
 import numpy as np
 import rclpy
+from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool, Float32MultiArray
+from std_msgs.msg import Float32MultiArray
 import tyro
 from xarm_msgs.msg import RobotMsg
 
 from xnodes.components.robot import ControlMode, HOME, RobotConfig, RobotPolicy
-from xnodes.nodes.legacy.base import Base
+from xnodes.nodes.legacy.active import ActiveFlag
+from xnodes.nodes.legacy.gripper import create_robot_driver, RobotDriverPlugin
 
 
-class FakeXArm:
-    """In-memory stand-in for XArmAPI; constructed when cfg.ip is None."""
-
-    def __init__(self) -> None:
-        self._grip: float = 425.0
-
-    def connect(self) -> None:
-        pass
-
-    def set_gripper_enable(self, enable: bool) -> None:
-        pass
-
-    def set_gripper_mode(self, mode: int) -> None:
-        pass
-
-    def set_gripper_speed(self, speed: int) -> None:
-        pass
-
-    def get_gripper_position(self) -> tuple[int, float]:
-        return 0, self._grip
-
-    def set_gripper_position(self, pos: float, wait: bool = True) -> None:  # noqa: ARG002
-        self._grip = float(pos)
-
-    def set_state(self, state: int = 0) -> int:  # noqa: ARG002
-        return 0
-
-    def set_mode(self, mode: int) -> int:  # noqa: ARG002
-        return 0
-
-    def clean_error(self) -> None:
-        pass
-
-    def clean_warn(self) -> None:
-        pass
-
-    def motion_enable(self, enable: bool) -> None:
-        pass
-
-
-class Xarm(Base):
+class Xarm(Node):
     """Thin xArm ROS node: wires subscriptions, publishers, and timers to RobotPolicy."""
 
-    def __init__(self, cfg: RobotConfig):
+    def __init__(
+        self,
+        cfg: RobotConfig,
+        driver_plugin: RobotDriverPlugin | None = None,
+        activator: ActiveFlag | None = None,
+    ):
         super().__init__("xarm_robot")
         self.cfg = cfg
         self.hz = cfg.hz
         self.griphz = cfg.grip_hz
-        self.t0 = time.time()
-        self.set_period()
 
-        if cfg.ip:
-            from xarm.wrapper import XArmAPI
-
-            self.robot = XArmAPI(cfg.ip, is_radian=True)
-        else:
-            self.robot = FakeXArm()
-        self.get_logger().info("Initializing robot.")
+        self.robot = (driver_plugin or create_robot_driver)(self, cfg)
+        self.get_logger().info(f"Initializing robot with backend={cfg.backend}.")
         self.robot.connect()
         self.mode = 1
 
         if cfg.use_gripper:
             self.robot.set_gripper_enable(True)
             self.robot.set_gripper_mode(0)
-            self.robot.set_gripper_speed(5000)
+            self.robot.set_gripper_speed(cfg.grip_speed)
         self.get_logger().info("Robot initialized.")
 
         self.policy = RobotPolicy(cfg, HOME)
+        self.activator = activator if activator is not None else ActiveFlag(self)
+        self.activator.add_listener(self._sync_active)
 
         # Subscriptions
         self.create_subscription(Float32MultiArray, "/robot_commands", self._on_command, 10)
         self.create_subscription(JointState, "/gello/state", self._on_leader, 10)
+        # Keep both joint-state topics during the legacy migration.
         self.create_subscription(JointState, "/joint_states", self._on_joints, 10)
+        self.create_subscription(JointState, "/xarm/joint_states", self._on_joints, 10)
         self.create_subscription(RobotMsg, "/xarm/robot_states", self._on_pose, 10)
 
         # Publishers
@@ -102,9 +66,8 @@ class Xarm(Base):
 
         self.get_logger().info("Robot Node Initialized.")
 
-    def set_active(self, msg: Bool) -> None:
-        super().set_active(msg)
-        self.policy.on_active(msg.data)
+    def _sync_active(self, active: bool) -> None:
+        self.policy.on_active(active)  # TODO maybe deprecate?
         self._clear_error_states()
 
     @property
@@ -133,26 +96,36 @@ class Xarm(Base):
 
     def _tick(self) -> None:
         """Main control loop: delegate to policy and publish result."""
+        if not self.activator.active:
+            return
+
         self.policy.tick()
 
         match self.cfg.ctrl:
             case ControlMode.JOINT:
                 result = self.policy.step_joints()
-                if not result:  # result is None:
+                if result is None:
                     self.logger.info(f"{result}")
                     return
-                displacements, joint_names, velocities = result
-                # displacements = (goal - self.policy._joints).tolist()
-                # self.logger.info(f'{np.array(displacements).round(2)}')
-                displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
-                eps = 0.005
-                displacements = np.clip(displacements, -eps, eps).tolist()
-                self.logger.info("after")
-                # self.logger.info(f"displ: {(self.policy._leader[:-1]-self.policy._joints).round(2)}")
-                self.logger.info(f"leader{(self.policy._leader).round(2)}")
-                self.logger.info(f"{self.policy._joint_names}")
-                self.logger.info("")
-                # self.logger.info(f"{(self.policy._joints).round(2)}")
+
+                if result is False:
+                    joint_names = self.policy._joint_names
+                    if not joint_names:
+                        return
+                    displacements = [0.0] * len(joint_names)
+                    velocities = [0.0] * len(joint_names)
+                else:
+                    displacements, joint_names, velocities = result
+                    # Keep a zero-motion heartbeat flowing once the streams are synchronized.
+                    displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
+                    eps = 0.005
+                    displacements = np.clip(displacements, -eps, eps).tolist()
+                    self.logger.info("after")
+                    # self.logger.info(f"displ: {(self.policy._leader[:-1]-self.policy._joints).round(2)}")
+                    self.logger.info(f"leader{(self.policy._leader).round(2)}")
+                    self.logger.info(f"{self.policy._joint_names}")
+                    self.logger.info("")
+                    # self.logger.info(f"{(self.policy._joints).round(2)}")
                 msg = JointJog()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = "link_base"
@@ -211,7 +184,7 @@ class Xarm(Base):
             time.sleep(0.1)
             self.robot.set_gripper_mode(0)
             time.sleep(0.1)
-            self.robot.set_gripper_speed(5000)
+            self.robot.set_gripper_speed(self.cfg.grip_speed)
             time.sleep(0.1)
 
 
