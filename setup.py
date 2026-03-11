@@ -54,6 +54,7 @@ setup(
             "intr = xnodes.nodes.chess:run",
             "april = xnodes.nodes.april_grid:run",
             "keyboard = xnodes.nodes.ctrl.keyboard:run",
+            "footpedal = xnodes.nodes.legacy.footpedal:run",
             "model = xnodes.nodes.legacy.model:run",
             "bridge = xnodes.nodes.bridge:run",
         ],
