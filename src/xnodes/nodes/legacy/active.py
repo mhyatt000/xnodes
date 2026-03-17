@@ -20,6 +20,7 @@ class ActiveFlag:
         self._active = initial
         # toggle_default = False if toggle is None else toggle
         # self._toggle = bool(node.declare_parameter("toggle", toggle_default).value)
+        self._node = node
         self._toggle = toggle
         self._last_flag = initial
         self._hooks: list[Callable[[bool], None]] = []
@@ -27,6 +28,10 @@ class ActiveFlag:
             self._hooks.append(on_change)
         self.publisher = node.create_publisher(Bool, topic, 10)
         self.subscription = node.create_subscription(Bool, topic, self._on_active, 10)
+
+    @property
+    def logger(self):
+        return self._node.get_logger()
 
     @property
     def active(self) -> bool:
@@ -42,6 +47,7 @@ class ActiveFlag:
         self.publisher.publish(Bool(data=active))
 
     def set(self, active: bool) -> None:
+        self.logger.info(f"Setting active={active}")
         self._active = active
         for hook in self._hooks:
             hook(active)

@@ -22,14 +22,19 @@ class Xarm(Node):
         self,
         cfg: RobotConfig,
         driver_plugin: RobotDriverPlugin | None = None,
-        activator: ActiveFlag | None = None,
+        # activator: ActiveFlag | None = None,
     ):
         super().__init__("xarm_robot")
         self.cfg = cfg
         self.hz = cfg.hz
 
         self.policy = RobotPolicy(cfg, HOME)
-        self.activator = activator if activator is not None else ActiveFlag(self)
+        # self.activator = activator if activator is not None else ActiveFlag(self)
+        self.activators = {
+            "active": ActiveFlag(self, toggle=True),
+            "estop": ActiveFlag(self, toggle=True, topic="/xgym/estop"),
+        }
+        self.activator = self.activators["active"]
         self.activator.add_hook(self.policy.on_active)
         self.gripper = GripperController(self, cfg, self.policy, self.activator, driver_plugin=driver_plugin)
         self.get_logger().info(f"Initialized robot backend={cfg.backend}.")
@@ -47,6 +52,8 @@ class Xarm(Node):
         self.jog_pub = self.create_publisher(JointJog, "/servo_server/delta_joint_cmds", 10)
 
         self.timer = self.create_timer(1 / cfg.hz, self._tick)
+        self.timer.cancel()
+        self.activators["estop"].add_hook(lambda active: self.timer.cancel() if not active else self.timer.reset())
 
         self.get_logger().info("Robot Node Initialized.")
 
@@ -57,8 +64,8 @@ class Xarm(Node):
     # --- Subscription callbacks ---
 
     def _on_joints(self, msg: JointState) -> None:
-        self.logger.info(f"on joints: {np.array(msg.position).round(2)} {np.array(msg.position).shape}")
-        self.logger.info(f"on joints: {list(msg.name)} {len(list(msg.name))}")
+        # self.logger.info(f"on joints: {np.array(msg.position).round(2)} {np.array(msg.position).shape}")
+        # self.logger.info(f"on joints: {list(msg.name)} {len(list(msg.name))}")
         self.policy.update_joints(np.array(msg.position), list(msg.name))
 
     def _on_pose(self, msg: RobotMsg) -> None:
@@ -76,8 +83,6 @@ class Xarm(Node):
 
     def _tick(self) -> None:
         """Main control loop: delegate to policy and publish result."""
-        if not self.activator.active:
-            return
 
         self.policy.tick()
 
@@ -85,7 +90,7 @@ class Xarm(Node):
             case ControlMode.JOINT:
                 result = self.policy.step_joints()
                 if result is None:
-                    self.logger.info(f"{result}")
+                    # self.logger.info(f"{result}")
                     return
 
                 if result is False:
@@ -100,11 +105,11 @@ class Xarm(Node):
                     displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
                     eps = 0.005
                     displacements = np.clip(displacements, -eps, eps).tolist()
-                    self.logger.info("after")
+                    # self.logger.info("after")
                     # self.logger.info(f"displ: {(self.policy._leader[:-1]-self.policy._joints).round(2)}")
-                    self.logger.info(f"leader{(self.policy._leader).round(2)}")
-                    self.logger.info(f"{self.policy._joint_names}")
-                    self.logger.info("")
+                    # self.logger.info(f"leader{(self.policy._leader).round(2)}")
+                    # self.logger.info(f"{self.policy._joint_names}")
+                    # self.logger.info("")
                     # self.logger.info(f"{(self.policy._joints).round(2)}")
                 msg = JointJog()
                 msg.header.stamp = self.get_clock().now().to_msg()
