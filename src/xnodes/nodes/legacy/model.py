@@ -5,6 +5,7 @@ import threading
 import typing
 from typing import Any
 
+import cv2
 from cv_bridge import CvBridge
 from geometry_msgs.msg import TransformStamped
 import jax
@@ -149,8 +150,8 @@ class Model(Base):
 
         self.cfg = ModelClientConfig(host=host, port=port, rep=rep, task=task, ensemble=ensemble)
 
-        self.req_hz = float(self.declare_parameter("req_hz", 20.0).value)  # request from server frequency
-        self.cmd_hz = float(self.declare_parameter("cmd_hz", 100.0).value)  # command frequency
+        self.req_hz = float(self.declare_parameter("req_hz", 5.0).value)  # request from server frequency
+        self.cmd_hz = float(self.declare_parameter("cmd_hz", 10.0).value)  # command frequency
         self.resolution = int(self.declare_parameter("resolution", 1).value)  # every N predicted steps
         self.arm_dof = int(self.declare_parameter("arm_dof", 7).value)
         self.joint_topic = str(self.declare_parameter("joint_topic", "/joint_states").value)
@@ -314,6 +315,9 @@ class Model(Base):
             missing_topics = {key: self.cameras.topics[key] for key in missing}
             self.logger.info(f"Missing images: {missing_topics}")
             return
+        imgs = jax.tree.map(lambda img: cv2.resize(img, (64, 64)) if img is not None else None, imgs)  # resize 64,64
+        self.logger.info(f"snapshot got: {spec(imgs)}")
+
         try:
             payload = build_policy_payload(
                 joints=joints,
@@ -323,7 +327,7 @@ class Model(Base):
                 ensemble=self.cfg.ensemble,
             )
             payload["observation"]["proprio_single"] = payload["observation"].pop("proprio_single_arm")[
-                ..., : self.arm_dof + 1
+                ..., -(self.arm_dof + 1) :
             ]  # trim to expected arm dof
         except ValueError as exc:
             self.logger.info(f"Payload error: {exc}")
