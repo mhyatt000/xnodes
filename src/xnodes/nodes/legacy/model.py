@@ -10,6 +10,8 @@ from geometry_msgs.msg import TransformStamped
 import jax
 import numpy as np
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data
 from rich import print
 from sensor_msgs.msg import Image, JointState
@@ -119,6 +121,11 @@ class Model(Base):
     def __init__(self, cfg: ModelClientConfig | None = None, cameras: CameraStreams | None = None):
         super().__init__("model")
         self._lock = threading.Lock()
+        self._cmd_lock = threading.Lock()
+        self._step_group = MutuallyExclusiveCallbackGroup()
+        self._command_group = MutuallyExclusiveCallbackGroup()
+        # A reentrant group could make sense later if policy requests become
+        # concurrency-safe and overlapping step() calls are explicitly desired.
 
         self.joints: np.ndarray | None = None
         self.pose: np.ndarray | None = None
@@ -194,9 +201,9 @@ class Model(Base):
         # self.moveit_pose_sub = self.create_subscription(RobotMsg, self.pose_topic, self.set_pose, 10)
         self.moveit_pose_t = self.create_timer(0.1, self.request_pose)  # polling tf for pose
         self.gripper_sub = self.create_subscription(Float32MultiArray, self.gripper_topic, self.set_gripper, 10)
-        self.step_timer = self.create_timer(1 / self.req_hz, self.step)
+        self.step_timer = self.create_timer(1 / self.req_hz, self.step, callback_group=self._step_group)
         self.publisher = self.create_publisher(JointState, self.state_topic, 10)
-        self.command_timer = self.create_timer(1 / self.cmd_hz, self.command)
+        self.command_timer = self.create_timer(1 / self.cmd_hz, self.command, callback_group=self._command_group)
 
     @property
     def logger(self):
@@ -209,6 +216,7 @@ class Model(Base):
             self.joints = None
             self.pose = None
             self.gripper = None
+        with self._cmd_lock:
             self.targets = None
 
     def request_pose(self):
@@ -280,6 +288,7 @@ class Model(Base):
             active = self.active
             reset = self._reset
             self.logger.info("enter step")
+
         imgs = self.cameras.snapshot()
         self.logger.info(f"snapshot got: {spec(imgs)}")
 
@@ -305,7 +314,6 @@ class Model(Base):
             missing_topics = {key: self.cameras.topics[key] for key in missing}
             self.logger.info(f"Missing images: {missing_topics}")
             return
-
         try:
             payload = build_policy_payload(
                 joints=joints,
@@ -325,10 +333,11 @@ class Model(Base):
         actions: dict[str, Any] = self.policy.step(payload)
         try:
             targets = extract_action_targets(actions, resolution=self.resolution)
-            with self._lock:
-                self.targets = targets
         except (KeyError, TypeError, ValueError) as exc:
             self.logger.info(f"Action parse error: {exc}")
+            return
+        with self._cmd_lock:
+            self.targets = targets
 
     def reset(self):
         with self._lock:
@@ -336,16 +345,20 @@ class Model(Base):
 
     def command(self):
         """Publishes model action"""
-        with self._lock:
+        with self._cmd_lock:
             targets = self.targets
-            joints = self.joints
-            gripper = self.gripper
             if targets is not None and len(targets) > 0:
                 target, self.targets = targets[0], targets[1:]
             else:
-                if joints is None or gripper is None:
-                    return
-                target = build_idle_target(joints, gripper)
+                target = None
+
+        if target is None:
+            with self._lock:
+                joints = None if self.joints is None else self.joints.copy()
+                gripper = None if self.gripper is None else self.gripper.copy()
+            if joints is None or gripper is None:
+                return
+            target = build_idle_target(joints, gripper)
 
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -357,13 +370,16 @@ class Model(Base):
 def main(cfg: ModelClientConfig | None = None):
     rclpy.init(args=None)
     node = Model(cfg)
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     print(node.cfg)
 
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         node.logger.info("Controller Node shutting down...")
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
