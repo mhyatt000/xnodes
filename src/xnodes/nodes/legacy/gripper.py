@@ -272,8 +272,11 @@ class GripperController:
         code, grip_raw = self._driver.get_gripper_position()
         if code or grip_raw is None or self._pub is None:
             return
+        self.logger.info(f"Gripper raw position: {grip_raw:.1f}")
         self._pub.publish(Float32MultiArray(data=[grip_raw / self._cfg.grip_max]))
         cmd = self._policy.step_gripper(grip_raw)
+        self.logger.info(f"Gripper policy command: {cmd}")
+        return
         # cmd = grip_raw +( random.random() -0.5)*50
         self.logger.info(f"grip_tick: raw={grip_raw:.1f} cmd={cmd}")
         if cmd is not None:
