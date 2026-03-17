@@ -5,8 +5,8 @@ model:
     rep: REL
     task: none
     ensemble: false
-    req_hz: 20.0
-    cmd_hz: 100.0
+    req_hz: 1.1
+    cmd_hz: 25.0
     resolution: 1
     joint_topic: /joint_states
     pose_topic: /xarm/robot_states
