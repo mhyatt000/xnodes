@@ -23,7 +23,6 @@ from xarm_msgs.msg import RobotMsg
 
 from xnodes.core.model_client import (
     ActionRepresentation,
-    build_idle_target,
     build_policy_payload,
     CAMERA_KEYS,
     CAMERA_POSTFIX,
@@ -190,6 +189,7 @@ class Model(Base):
         self._reset = True
 
         self.targets = None
+        self.last_target: np.ndarray | None = None
         self.cameras = cameras if cameras is not None else CameraStreams(self, self.camera_topics)
 
         self.logger.info("Model Client Initialized.")
@@ -299,6 +299,8 @@ class Model(Base):
             )
             return
 
+        self.logger.info(f"{np.array(joints).round(2)} {np.array(gripper).round(2)}")
+
         """
         if active is False:
             if not reset:
@@ -329,12 +331,14 @@ class Model(Base):
             payload["observation"]["proprio_single"] = payload["observation"].pop("proprio_single_arm")[
                 ..., -(self.arm_dof + 1) :
             ]  # trim to expected arm dof
+            self.logger.info(f"policy proprio: {payload['observation']['proprio_single']}")
         except ValueError as exc:
             self.logger.info(f"Payload error: {exc}")
             return
 
         self.logger.info(f"Policy payload: joints={spec(payload)}")
         actions: dict[str, Any] = self.policy.step(payload)
+        self.logger.info(f"Policy actions: {spec(actions)}")
         try:
             targets = extract_action_targets(actions, resolution=self.resolution)
         except (KeyError, TypeError, ValueError) as exc:
@@ -342,6 +346,7 @@ class Model(Base):
             return
         with self._cmd_lock:
             self.targets = targets
+        self.logger.info(f"Step complete. targets={spec(self.targets)}")
 
     def reset(self):
         with self._lock:
@@ -349,6 +354,7 @@ class Model(Base):
 
     def command(self):
         """Publishes model action"""
+        self.logger.debug("tick command")
         with self._cmd_lock:
             targets = self.targets
             if targets is not None and len(targets) > 0:
@@ -357,17 +363,19 @@ class Model(Base):
                 target = None
 
         if target is None:
-            with self._lock:
-                joints = None if self.joints is None else self.joints.copy()
-                gripper = None if self.gripper is None else self.gripper.copy()
-            if joints is None or gripper is None:
-                return
-            target = build_idle_target(joints, gripper)
+            self.logger.debug("No targets to command.")
+            target = self.last_target
+        if target is None:
+            self.logger.debug("No last target available. Skipping command.")
+            return
 
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f"joint{i + 1}" for i in range(len(target))]
         msg.position = target.tolist()
+        with self._cmd_lock:
+            remain = len(self.targets) if self.targets is not None else 0
+        self.logger.info(f"Remain: {remain} | command={np.array(target).round(2)} deg={np.rad2deg(target).round(1)}")
         self.publisher.publish(msg)
 
 

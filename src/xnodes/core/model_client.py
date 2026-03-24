@@ -141,6 +141,5 @@ def extract_action_targets(actions: Mapping[str, Any], resolution: int) -> np.nd
         raise KeyError(msg)
 
     act = np.asarray(actions[key]).copy()
-    if act.ndim == 1:
-        act = act[None]
+    act = act.reshape(-1, act.shape[-1])  # ensure 2D
     return act[::resolution].copy()
