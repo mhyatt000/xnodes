@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from threading import Lock
 from typing import Protocol
 
 from control_msgs.action import GripperCommand
 from rclpy.action import ActionClient
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from xarm_msgs.srv import Call, GetFloat32, GripperMove, SetFloat32, SetInt16
@@ -244,12 +246,27 @@ class GripperController:
         self._activator = activator
         self._driver = (driver_plugin or create_robot_driver)(node, cfg)
         self._driver.connect()
+        self._state_lock = Lock()
+        self._last_grip_raw: float | None = None
+        self._pending_cmd: int | None = None
 
         self._pub = None
-        self._timer = None
+        self._read_timer = None
+        self._write_timer = None
+        self._read_group = MutuallyExclusiveCallbackGroup()
+        self._write_group = MutuallyExclusiveCallbackGroup()
         if cfg.use_gripper:
             self._pub = node.create_publisher(Float32MultiArray, "/xgym/gripper", 10)
-            self._timer = node.create_timer(1 / cfg.grip_hz, self._grip_tick)
+            self._read_timer = node.create_timer(
+                1 / cfg.grip_hz,
+                self._grip_read_tick,
+                callback_group=self._read_group,
+            )
+            self._write_timer = node.create_timer(
+                1 / cfg.grip_hz,
+                self._grip_write_tick,
+                callback_group=self._write_group,
+            )
             self.setup()
             activator.add_hook(lambda _active: self._driver.clean_gripper_error())
 
@@ -268,16 +285,27 @@ class GripperController:
         self._driver.set_gripper_mode(0)
         self._driver.set_gripper_speed(self._cfg.grip_speed)
 
-    def _grip_tick(self) -> None:
+    def _grip_read_tick(self) -> None:
         code, grip_raw = self._driver.get_gripper_position()
         if code or grip_raw is None or self._pub is None:
+            with self._state_lock:
+                self._last_grip_raw = None
+                self._pending_cmd = None
             return
-        self.logger.info(f"Gripper raw position: {grip_raw:.1f}")
+        self.logger.debug(f"Gripper raw position: {grip_raw:.1f}")
         self._pub.publish(Float32MultiArray(data=[grip_raw / self._cfg.grip_max]))
         cmd = self._policy.step_gripper(grip_raw)
-        self.logger.info(f"Gripper policy command: {cmd}")
-        return
-        # cmd = grip_raw +( random.random() -0.5)*50
-        self.logger.info(f"grip_tick: raw={grip_raw:.1f} cmd={cmd}")
+        self.logger.debug(f"Gripper policy command: {cmd}")
+        with self._state_lock:
+            self._last_grip_raw = grip_raw
+            self._pending_cmd = cmd
+
+    def _grip_write_tick(self) -> None:
+        with self._state_lock:
+            grip_raw = self._last_grip_raw
+            cmd = self._pending_cmd
+        if grip_raw is None:
+            return
+        self.logger.debug(f"grip_tick: raw={grip_raw:.1f} cmd={cmd}")
         if cmd is not None:
             self._driver.set_gripper_position(cmd, wait=False)

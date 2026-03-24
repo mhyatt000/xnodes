@@ -4,6 +4,7 @@ from control_msgs.msg import JointJog
 from geometry_msgs.msg import TwistStamped
 import numpy as np
 import rclpy
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
@@ -103,7 +104,7 @@ class Xarm(Node):
                     displacements, joint_names, velocities = result
                     # Keep a zero-motion heartbeat flowing once the streams are synchronized.
                     displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
-                    eps = 0.005
+                    eps = 0.001
                     displacements = np.clip(displacements, -eps, eps).tolist()
                     # self.logger.info("after")
                     # self.logger.info(f"displ: {(self.policy._leader[:-1]-self.policy._joints).round(2)}")
@@ -143,11 +144,14 @@ class Xarm(Node):
 def run(cfg: RobotConfig | None = None) -> None:
     rclpy.init(args=None)
     node = Xarm(cfg=cfg or RobotConfig())
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         node.get_logger().info("Robot Node shutting down...")
     finally:
+        executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
