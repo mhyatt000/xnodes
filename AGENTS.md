@@ -22,6 +22,8 @@ source .envrc
 pixi run ros2 run xnodes model
 ```
 
+For Codex shell commands, prefer `pixi run --manifest-path "$HOME/ws" ...` over `bash -lc 'source .envrc && ...'` when possible. It avoids brittle shell quoting and usually avoids unnecessary permission prompts while still using the workspace Pixi environment.
+
 to see the defined pixi tasks use `pixi run` with no args
 
 ## ruff
@@ -74,6 +76,8 @@ A `.envrc` (direnv) in this repo sets `PIXI_PROJECT_MANIFEST=~/ws/pixi.toml`, so
 - write logging where appropriate. it will help the dev.
 
 - Always debug in the repo’s ROS environment: source .envrc and then run pixi run ros2 ..., since the workspace/pixi setup is required
+- For Codex terminal commands, prefer `pixi run --manifest-path "$HOME/ws" ros2 ...` for topic inspection and other read-only ROS CLI work instead of wrapping the command in `bash -lc 'source .envrc && ...'`
+- When bash-based debugging is needed, prefer writing a small `.sh` script over issuing a long one-off shell command so the workflow stays reproducible for both agents and humans.
 - Start with ROS graph inspection, not code edits: ros2 node list, ros2 node info, ros2 topic list, ros2 topic info -v, ros2 topic echo, and ros2 topic hz.
 - Check QoS compatibility when image/sensor topics look “dead”; this code uses mixed qos. sometimes best-effort sometimes others.
 - Verify topic-prefix contracts before assuming a publisher is broken.
