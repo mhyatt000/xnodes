@@ -219,6 +219,21 @@ class TestGripperControl:
         cmd = p.step_gripper(340.0)
         assert cmd == int(0.4 * 850)
 
+    def test_update_joints_ignores_drive_joint(self) -> None:
+        p = _model_policy()
+        p.on_active(True)
+        p.update_joints(np.array([0.0, *JOINTS_7.tolist()]), ["drive_joint", *NAMES_7])
+        assert p._grip == pytest.approx(1.0)
+
+    def test_model_gripper_not_pinned_by_drive_joint(self) -> None:
+        p = _model_policy()
+        p.on_active(True)
+        p.update_joints(np.array([0.0, *JOINTS_7.tolist()]), ["drive_joint", *NAMES_7])
+        p._leader = np.array([*JOINTS_7.tolist(), 1.0])
+        cmd = p.step_gripper(840.0)
+        assert cmd is not None
+        assert cmd > 800
+
     def test_model_mode_applies_ema_and_discretizes(self) -> None:
         p = _model_policy()
         p.on_active(True)

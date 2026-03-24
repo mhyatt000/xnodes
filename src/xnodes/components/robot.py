@@ -95,8 +95,8 @@ class RobotConfig:
     backend: RobotBackend = RobotBackend.AUTO  # hardware backend selection
     use_gripper: bool = True
     hz: int = 200  # command frequency (Hz)
-    grip_hz: int = 10  # gripper poll frequency (Hz)
-    grip_speed: int = 2000  # gripper speed in hardware units
+    grip_hz: int = 15  # gripper poll frequency (Hz)
+    grip_speed: int = 2500  # gripper speed in hardware units
     acc: AccelConfigFactory = field(default_factory=AccelConfigFactory)
     cart_scale: float = 0.05  # Cartesian velocity clipping bound per tick
     grip_bins: int = 50  # gripper discretization bins (MODEL mode only)
@@ -172,7 +172,7 @@ class RobotPolicy:
         if len(joints) == 6:
             return  # 6-DOF variant from wrong topic; skip
         jn = dict(zip(joint_names, joints))
-        self._grip = jn.pop("drive_joint", self._grip)
+        jn.pop("drive_joint", None)  # dont use drive joint, track gripper from gripper backend
 
         # pop any other keys that arent joint{i}
         jn = {n: j for n, j in jn.items() if n.startswith("joint") and n[-1].isdigit()}
@@ -298,7 +298,7 @@ class RobotPolicy:
             case InputMode.GELLO | InputMode.SPACEMOUSE:
                 pass  # no EMA or binning for teleop
             case _:
-                new = float(np.clip(new, 0.0, 1.0))
+                new = float(np.clip(new, 0.0, 1.0))  # clip to [0, 1] after model update, before EMA
                 new = new * self._gema + self._grip * (1 - self._gema)
                 self._grip = new
 
