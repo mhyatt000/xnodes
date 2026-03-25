@@ -1,0 +1,11 @@
+recorder:
+  ros__parameters:
+    signal_topic: /xgym/active       # Bool topic — rising edge starts, falling edge stops
+    output_dir: /tmp/episodes         # where bags are written
+    storage: mcap                     # mcap or sqlite3
+    topics:
+      - /joint_states
+      - /xgym/gripper
+      - /cam/low/image_raw/compressed
+      - /cam/side/image_raw/compressed
+      - /camera/camera/color/image_raw/compressed
