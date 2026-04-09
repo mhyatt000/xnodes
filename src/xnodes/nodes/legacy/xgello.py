@@ -75,11 +75,11 @@ class Gello(Base):
         msg.position = action.tolist()
         self.pub.publish(msg)
 
-        self.get_logger().info(f"{msg.name}")
+        # self.get_logger().info(f"{msg.name}")
         # rad to deg
         # no scientific notation, round to 2 decimals
         np.set_printoptions(precision=1, suppress=True)
-        self.get_logger().info(f"{(action)} deg")
+        self.get_logger().info(f"{(np.rad2deg(action[:-1]))} deg - {action[-1]:.2f} gripper")
 
         if self.env is not None:
             self.env.step(action)
