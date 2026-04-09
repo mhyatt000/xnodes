@@ -1,0 +1,6 @@
+foot_pedal:
+  ros__parameters:
+    path: /dev/input/by-id/usb-PCsensor_FootSwitch-event-kbd
+    topic_a: "/xgym/active" # compute step
+    topic_b: "/xgym/estop" # software estop. any robot motion
+    topic_c: "" # record replay?
