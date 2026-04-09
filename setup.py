@@ -57,7 +57,7 @@ setup(
             "footpedal = xnodes.nodes.legacy.footpedal:run",
             "model = xnodes.nodes.legacy.model:run",
             "bridge = xnodes.nodes.bridge:run",
-            "recorder = xnodes.nodes.recorder:run",
+            "recorder = xnodes.nodes.recorder:main",
         ],
     },
     extras_require={

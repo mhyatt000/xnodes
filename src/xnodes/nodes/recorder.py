@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import math
 from pathlib import Path
@@ -9,8 +10,6 @@ import re
 from typing import Any
 
 from builtin_interfaces.msg import Time
-import numcodecs
-from numcodecs import Blosc
 import numpy as np
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 import rclpy
@@ -19,8 +18,11 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
 from sensor_msgs.msg import CompressedImage, Image, JointState
-from std_msgs.msg import Bool
 import zarr
+import zarr.codecs
+from zarr.core.dtype import VariableLengthBytes
+
+from xnodes.nodes.legacy.active import ActiveFlag
 
 
 def topic_to_key(topic: str) -> str:
@@ -68,7 +70,8 @@ class TopicState:
     ros_type: str
     msg_cls: type
     latest_msg: Any | None = None
-    latest_stamp_ns: int = -1
+    latest_stamp_ns: int = -1  # header stamp (used in dataset)
+    latest_recv_ns: int = -1  # wall-clock receive time (used for staleness)
     seen_count: int = 0
 
 
@@ -87,20 +90,21 @@ class EpisodeWriter:
         self.root = root
         self.episode_idx = episode_idx
         self.flush_chunk_size = flush_chunk_size
-        self.episode_dir = root / f"episode_{episode_idx:06d}.zarr"
-        self.store = zarr.open_group(str(self.episode_dir), mode="w")
+        self.episode_dir = root / f"episode_{episode_idx:06d}"
+        parent = zarr.open_group(str(root), mode="a")
+        self.store = parent.require_group(f"episode_{episode_idx:06d}", overwrite=True)
         self.store.attrs["episode_idx"] = episode_idx
         self.store.attrs["format_version"] = 1
         self.store.attrs["flush_chunk_size"] = flush_chunk_size
-        self._compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
+        self._compressor = zarr.codecs.BloscCodec(cname="zstd", clevel=3, shuffle=zarr.codecs.BloscShuffle.bitshuffle)
         self._steps = self.store.create_group("steps")
         self._topics = self.store.create_group("topics")
-        self._steps.create_dataset(
+        self._steps.create_array(
             "timestamp_ns",
             shape=(0,),
             chunks=(max(128, flush_chunk_size),),
             dtype="i8",
-            compressor=self._compressor,
+            compressors=[self._compressor],
         )
         self._topic_groups: dict[str, zarr.Group] = {}
         self._topic_modes: dict[str, str] = {}
@@ -118,7 +122,7 @@ class EpisodeWriter:
     def append_steps(self, step_times_ns: np.ndarray) -> None:
         ds = self._steps["timestamp_ns"]
         old_n = ds.shape[0]
-        ds.resize(old_n + len(step_times_ns))
+        ds.resize((old_n + len(step_times_ns),))
         ds[old_n:] = step_times_ns
 
     def append_topic_batch(self, topic: str, ros_type: str, stamps_ns: np.ndarray, payloads: list[Any]) -> None:
@@ -149,68 +153,59 @@ class EpisodeWriter:
         return "json"
 
     def _init_topic_storage(self, grp: zarr.Group, mode: str, sample: Any | None, chunk_hint: int) -> None:
-        grp.create_dataset(
-            "stamp_ns",
-            shape=(0,),
-            chunks=(max(128, chunk_hint),),
-            dtype="i8",
-            compressor=self._compressor,
-        )
+        ch = max(128, chunk_hint)
+        grp.create_array("stamp_ns", shape=(0,), chunks=(ch,), dtype="i8", compressors=[self._compressor])
         if mode == "image" and isinstance(sample, np.ndarray):
             shape = sample.shape
             self._frame_shapes[grp.attrs["topic"]] = shape
             grp.attrs["frame_shape"] = list(shape)
-            grp.create_dataset(
+            grp.create_array(
                 "data",
                 shape=(0, *shape),
                 chunks=(max(1, min(16, chunk_hint)), *shape),
                 dtype=sample.dtype,
-                compressor=self._compressor,
+                compressors=[self._compressor],
             )
-        elif mode == "joint_state":
-            grp.create_dataset(
+        elif mode == "joint_state" and isinstance(sample, dict):
+            n_joints = len(sample["position"])
+            grp.create_array(
                 "name_json",
                 shape=(0,),
-                chunks=(max(128, chunk_hint),),
-                dtype=zarr.string_dtype(),
-                compressor=self._compressor,
+                chunks=(ch,),
+                dtype=str,
+                serializer=zarr.codecs.VLenUTF8Codec(),
+                compressors=[self._compressor],
             )
             for field in ("position", "velocity", "effort"):
-                grp.create_dataset(
-                    field,
-                    shape=(0,),
-                    chunks=(max(128, chunk_hint),),
-                    dtype=object,
-                    object_codec=numcodecs.VLenArray(np.float64),
+                grp.create_array(
+                    field, shape=(0, n_joints), chunks=(ch, n_joints), dtype="f8", compressors=[self._compressor]
                 )
         elif mode == "compressed_image":
-            grp.create_dataset(
+            grp.create_array(
                 "format",
                 shape=(0,),
-                chunks=(max(128, chunk_hint),),
-                dtype=zarr.string_dtype(),
-                compressor=self._compressor,
+                chunks=(ch,),
+                dtype=str,
+                serializer=zarr.codecs.VLenUTF8Codec(),
+                compressors=[self._compressor],
             )
-            grp.create_dataset(
-                "data",
-                shape=(0,),
-                chunks=(max(128, chunk_hint),),
-                dtype=object,
-                object_codec=numcodecs.VLenArray(np.uint8),
+            grp.create_array(
+                "data", shape=(0,), chunks=(ch,), dtype=VariableLengthBytes(), compressors=[self._compressor]
             )
         else:
-            grp.create_dataset(
+            grp.create_array(
                 "json",
                 shape=(0,),
-                chunks=(max(128, chunk_hint),),
-                dtype=zarr.string_dtype(),
-                compressor=self._compressor,
+                chunks=(ch,),
+                dtype=str,
+                serializer=zarr.codecs.VLenUTF8Codec(),
+                compressors=[self._compressor],
             )
 
     def _append_stamps(self, grp: zarr.Group, stamps_ns: np.ndarray) -> None:
         ds = grp["stamp_ns"]
         old_n = ds.shape[0]
-        ds.resize(old_n + len(stamps_ns))
+        ds.resize((old_n + len(stamps_ns),))
         ds[old_n:] = stamps_ns
 
     def _append_payloads(self, grp: zarr.Group, mode: str, payloads: list[Any]) -> None:
@@ -218,38 +213,48 @@ class EpisodeWriter:
             ds = grp["data"]
             old_n = ds.shape[0]
             frames = np.stack(list(payloads), axis=0)
-            ds.resize(old_n + frames.shape[0], axis=0)
+            ds.resize((old_n + frames.shape[0], *frames.shape[1:]))
             ds[old_n:] = frames
             return
 
         if mode == "joint_state":
+            n_joints = grp["position"].shape[1]
+            good = [p for p in payloads if len(p["position"]) == n_joints]
+            if len(good) < len(payloads):
+                print(
+                    f"[recorder] {grp.attrs['topic']}: dropped {len(payloads) - len(good)} rows with wrong joint count (expected {n_joints})"
+                )
+            if not good:
+                return
             old_n = grp["name_json"].shape[0]
-            n = len(payloads)
-            grp["name_json"].resize(old_n + n)
-            grp["position"].resize(old_n + n)
-            grp["velocity"].resize(old_n + n)
-            grp["effort"].resize(old_n + n)
-            for i, p in enumerate(payloads):
-                grp["name_json"][old_n + i] = json.dumps(p["name"])
-                grp["position"][old_n + i] = np.asarray(p["position"], dtype=np.float64)
-                grp["velocity"][old_n + i] = np.asarray(p["velocity"], dtype=np.float64)
-                grp["effort"][old_n + i] = np.asarray(p["effort"], dtype=np.float64)
+            n = len(good)
+            grp["name_json"].resize((old_n + n,))
+            grp["position"].resize((old_n + n, n_joints))
+            grp["velocity"].resize((old_n + n, n_joints))
+            grp["effort"].resize((old_n + n, n_joints))
+            grp["name_json"][old_n:] = np.array([json.dumps(p["name"]) for p in good], dtype=object)
+            grp["position"][old_n:] = np.stack([np.asarray(p["position"], dtype=np.float64) for p in good])
+            grp["velocity"][old_n:] = np.stack([np.asarray(p["velocity"], dtype=np.float64) for p in good])
+            grp["effort"][old_n:] = np.stack([np.asarray(p["effort"], dtype=np.float64) for p in good])
             return
 
         if mode == "compressed_image":
             old_n = grp["format"].shape[0]
             n = len(payloads)
-            grp["format"].resize(old_n + n)
-            grp["data"].resize(old_n + n)
+            grp["format"].resize((old_n + n,))
+            grp["data"].resize((old_n + n,))
+            formats = np.array([p["format"] for p in payloads], dtype=object)
+            grp["format"][old_n:] = formats
+            raw = np.empty(n, dtype=object)
             for i, p in enumerate(payloads):
-                grp["format"][old_n + i] = p["format"]
-                grp["data"][old_n + i] = np.asarray(p["data"], dtype=np.uint8)
+                raw[i] = np.asarray(p["data"], dtype=np.uint8).tobytes()
+            grp["data"][old_n:] = raw
             return
 
         ds = grp["json"]
         old_n = ds.shape[0]
-        ds.resize(old_n + len(payloads))
-        ds[old_n:] = [json.dumps(p) for p in payloads]
+        ds.resize((old_n + len(payloads),))
+        ds[old_n:] = np.array([json.dumps(p) for p in payloads], dtype=object)
 
 
 class RecordNode(Node):
@@ -277,46 +282,43 @@ class RecordNode(Node):
         self.declare_parameter("auto_discover_timeout_sec", 10.0)
 
         self.signal_topic = str(self.get_parameter("signal_topic").value)
-        self.output_dir = Path(str(self.get_parameter("output_dir").value))
+        base_dir = Path(str(self.get_parameter("output_dir").value))
         self.topic_names = [t for t in self.get_parameter("topics").value if t]
         self.flush_chunk_size = int(self.get_parameter("flush_chunk_size").value)
         self.buf_hz = float(self.get_parameter("buf_hz").value)
         self.max_topic_age_ms = float(self.get_parameter("max_topic_age_ms").value)
         self.auto_discover_timeout_sec = float(self.get_parameter("auto_discover_timeout_sec").value)
 
+        self.output_dir = base_dir / datetime.now().strftime("%Y-%m-%d_%H%M")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         self.recording = False
         self.episode_idx = self._next_episode_idx()
         self.writer: EpisodeWriter | None = None
         self.topic_states: dict[str, TopicState] = {}
-        self.subscriptions = []
+        self._subs = []
         self._flush_step_times: list[int] = []
         self._flush_payloads: dict[str, list[Any]] = defaultdict(list)
         self._flush_payload_stamps: dict[str, list[int]] = defaultdict(list)
         self._episode_start_ns: int | None = None
         self._episode_samples = 0
 
-        self.signal_sub = self.create_subscription(
-            Bool,
-            self.signal_topic,
-            self._signal_cb,
-            qos_for_topic_name(self.signal_topic),
-        )
+        self._active_flag = ActiveFlag(self, topic=self.signal_topic, toggle=True, on_change=self._signal_cb)
 
         self._discovery_deadline_ns = now_ns(self) + int(self.auto_discover_timeout_sec * 1e9)
         self._discovery_timer = self.create_timer(0.5, self._discovery_tick)
         self._buf_timer = self.create_timer(1.0 / self.buf_hz, self._buffer_tick)
+        self.create_timer(1.0, self._status_tick)
 
         self.get_logger().info(f"signal_topic={self.signal_topic}")
         self.get_logger().info(f"output_dir={self.output_dir}")
         self.get_logger().info(f"flush_chunk_size={self.flush_chunk_size}, buf_hz={self.buf_hz}")
 
     def _next_episode_idx(self) -> int:
-        existing = sorted(self.output_dir.glob("episode_*.zarr"))
+        existing = sorted(self.output_dir.glob("episode_*"))
         if not existing:
             return 0
-        last = existing[-1].stem
+        last = existing[-1].name
         m = re.search(r"(\d+)$", last)
         return (int(m.group(1)) + 1) if m else len(existing)
 
@@ -351,7 +353,7 @@ class RecordNode(Node):
             self._topic_cb(_topic, msg)
 
         sub = self.create_subscription(msg_cls, topic, _cb, qos_for_topic_name(topic))
-        self.subscriptions.append(sub)
+        self._subs.append(sub)
         self.get_logger().info(f"subscribed: {topic} [{ros_type}]")
 
     def _topic_cb(self, topic: str, msg: Any) -> None:
@@ -359,12 +361,13 @@ class RecordNode(Node):
         recv_ns = now_ns(self)
         state.latest_msg = msg
         state.latest_stamp_ns = get_msg_stamp_ns(msg, recv_ns)
+        state.latest_recv_ns = recv_ns
         state.seen_count += 1
 
-    def _signal_cb(self, msg: Bool) -> None:
-        if msg.data and not self.recording:
+    def _signal_cb(self, active: bool) -> None:
+        if active and not self.recording:
             self._start_episode()
-        elif not msg.data and self.recording:
+        elif not active and self.recording:
             self._stop_episode()
 
     def _start_episode(self) -> None:
@@ -412,13 +415,21 @@ class RecordNode(Node):
 
         for topic, state in self.topic_states.items():
             if state.latest_msg is None:
+                self.get_logger().debug(f"skip {topic}: no msg yet")
                 continue
-            if tick_ns - state.latest_stamp_ns > max_age_ns:
+            age_ms = (tick_ns - state.latest_recv_ns) / 1e6
+            if tick_ns - state.latest_recv_ns > max_age_ns:
+                self.get_logger().warning(
+                    f"skip {topic}: age={age_ms:.0f}ms > max={self.max_topic_age_ms}ms (seen={state.seen_count})"
+                )
                 continue
             row_payloads[topic] = self._convert_msg(state.latest_msg)
             row_stamps[topic] = state.latest_stamp_ns
 
         if not row_payloads:
+            self.get_logger().warning(
+                f"tick dropped: no topics had fresh data (recording={self.recording}, states={list(self.topic_states.keys())})"
+            )
             return
 
         self._flush_step_times.append(tick_ns)
@@ -429,6 +440,10 @@ class RecordNode(Node):
 
         if len(self._flush_step_times) >= self.flush_chunk_size:
             self._flush()
+
+    def _status_tick(self) -> None:
+        if self.recording:
+            self.get_logger().info(f"recording episode {self.episode_idx:06d}: {self._episode_samples} samples")
 
     def _flush(self) -> None:
         if not self._flush_step_times or self.writer is None:
@@ -469,11 +484,15 @@ class RecordNode(Node):
             "bgra8": np.uint8,
             "mono8": np.uint8,
             "mono16": np.uint16,
+            "yuv422": np.uint8,
+            "yuv422_yuy2": np.uint8,
         }
         dtype = dtype_map.get(msg.encoding)
         if dtype is None:
-            # Fall back to raw bytes as JSON-compatible representation.
-            return np.frombuffer(msg.data, dtype=np.uint8)
+            self.get_logger().warning(
+                f"unknown image encoding '{msg.encoding}' — storing raw bytes; add to dtype_map to fix"
+            )
+            return np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
 
         channels = {
             "rgb8": 3,
@@ -482,6 +501,8 @@ class RecordNode(Node):
             "bgra8": 4,
             "mono8": 1,
             "mono16": 1,
+            "yuv422": 2,
+            "yuv422_yuy2": 2,
         }[msg.encoding]
         arr = np.frombuffer(msg.data, dtype=dtype)
         if channels == 1:
