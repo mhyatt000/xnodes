@@ -2,7 +2,7 @@ model:
   ros__parameters:
     host: none
     port: 8000
-    rep: REL
+    rep: ABS
     task: none
     ensemble: false
     req_hz: 1.1
