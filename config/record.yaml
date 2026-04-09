@@ -1,11 +1,15 @@
 recorder:
   ros__parameters:
-    signal_topic: /xgym/active       # Bool topic — rising edge starts, falling edge stops
-    output_dir: /tmp/episodes         # where bags are written
-    storage: mcap                     # mcap or sqlite3
+    signal_topic: /xgym/active
+    output_dir: /tmp/episodes
+    flush_chunk_size: 32
+    buf_hz: 50.0
+    max_topic_age_ms: 5000.0
+    auto_discover_timeout_sec: 10.0
     topics:
-      - /joint_states
+      - /xarm/joint_states
+      - /xarm/robot_states
       - /xgym/gripper
-      - /cam/low/image_raw/compressed
-      - /cam/side/image_raw/compressed
+      - /cam/low/image_raw
+      - /cam/side/image_raw
       - /camera/camera/color/image_raw/compressed
