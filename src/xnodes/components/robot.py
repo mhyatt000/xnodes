@@ -7,41 +7,56 @@ import time
 import numpy as np
 
 
-class Accelerator:
-    """PD controller with Euler integration for smooth velocity ramping."""
+class SlewRateLimiter:
+    """Acceleration-limited velocity ramp for smooth joint motion."""
 
     def __init__(
         self,
         dt: float = 0.02,
-        kp: float = 1.0,
-        kd: float = 0.5,
+        v_max: float = 1.0,
         a_max: float = 2.0,
-        initial_position: float = 0.0,
-        initial_velocity: float = 0.0,
+        initial_position: np.ndarray | None = None,
+        initial_velocity: np.ndarray | None = None,
     ):
         self.dt = dt
-        self.kp = kp
-        self.kd = kd
+        self.v_max = v_max
         self.a_max = a_max
-        self.position = np.array(initial_position, dtype=float)
-        self.velocity = np.array(initial_velocity, dtype=float)
+        self.position = None if initial_position is None else np.array(initial_position, dtype=float)
+        self.velocity = None if initial_velocity is None else np.array(initial_velocity, dtype=float)
+        self.i = 0
+
+    def sync(self, position: np.ndarray, reset_velocity: bool = False) -> None:
+        """Update measured position while preserving ramp state."""
+        pos = np.array(position, dtype=float)
+        self.position = pos
+        if reset_velocity or self.velocity is None or self.velocity.shape != pos.shape:
+            self.velocity = np.zeros_like(pos)
+
+    def reset(self) -> None:
+        """Clear velocity state on activation changes or mode switches."""
+        if self.velocity is not None:
+            self.velocity = np.zeros_like(self.velocity)
         self.i = 0
 
     def step(self, goal: np.ndarray) -> dict:
         """Advance one time step toward goal; return state dict."""
+        if self.position is None or self.velocity is None:
+            raise ValueError("SlewRateLimiter must be synced before step()")
         tick = time.time()
         goal = np.array(goal, dtype=float)
         error = goal - self.position
-        acceleration = np.clip(self.kp * error - self.kd * self.velocity, -self.a_max, self.a_max)
-        self.velocity += acceleration * self.dt
-        self.position += self.velocity * self.dt
+        target_velocity = np.clip(error / self.dt, -self.v_max, self.v_max)
+        dv_max = self.a_max * self.dt
+        dv = np.clip(target_velocity - self.velocity, -dv_max, dv_max)
+        self.velocity += dv
+        position = self.position + self.velocity * self.dt
         self.i += 1
         return {
             "goal": goal,
-            "position": self.position.copy(),
+            "position": position.copy(),
             "velocity": self.velocity.copy(),
             "error": error,
-            "acceleration": acceleration,
+            "acceleration": (dv / self.dt).copy(),
             "time": time.time() - tick,
         }
 
@@ -68,14 +83,13 @@ class RobotBackend(StrEnum):
 
 @dataclass
 class AccelConfigFactory:
-    """Factory for Accelerator instances."""
+    """Factory for slew-rate-limited joint motion."""
 
-    a_max: float = 30.0  # max acceleration
-    kp: float = 800.0  # proportional gain: stiffness of response to position error
-    kd: float = 40.0  # derivative gain: damping against oscillation
+    a_max: float = 100.0  # max acceleration
+    v_max: float = 2.0  # max joint velocity in rad/s
 
-    def create(self, hz: float) -> Accelerator:
-        return Accelerator(dt=1 / hz, a_max=self.a_max, kp=self.kp, kd=self.kd)
+    def create(self, hz: float) -> SlewRateLimiter:
+        return SlewRateLimiter(dt=1 / hz, a_max=self.a_max, v_max=self.v_max)
 
 
 @dataclass
@@ -83,7 +97,7 @@ class GripperConfig:
     bins: int = 50  # discretization bins for model-based gripper control
     maximum: int = 850  # maximum gripper position in hardware units
     hz: int = 10  # gripper command frequency (Hz)
-    speed: int = 2000  # gripper speed in hardware units
+    speed: int = 3000  # gripper speed in hardware units
 
 
 @dataclass
@@ -94,9 +108,10 @@ class RobotConfig:
     ctrl: ControlMode = ControlMode.JOINT  # control mode
     backend: RobotBackend = RobotBackend.AUTO  # hardware backend selection
     use_gripper: bool = True
-    hz: int = 200  # command frequency (Hz)
-    grip_hz: int = 15  # gripper poll frequency (Hz)
-    grip_speed: int = 2500  # gripper speed in hardware units
+    hz: int = 200  # command frequency (Hz) xarm
+    poll_hz: int = 50  # command request frequency (Hz)
+    grip_hz: int = 50  # gripper poll frequency (Hz)
+    grip_speed: int = 3000  # gripper speed in hardware units
     acc: AccelConfigFactory = field(default_factory=AccelConfigFactory)
     cart_scale: float = 0.05  # Cartesian velocity clipping bound per tick
     grip_bins: int = 50  # gripper discretization bins (MODEL mode only)
@@ -141,7 +156,7 @@ class RobotPolicy:
     def __init__(self, cfg: RobotConfig, home: RobotState = HOME):
         self.cfg = cfg
         self.home = home
-        self.acc = cfg.acc.create(cfg.hz)
+        self.acc = cfg.acc.create(cfg.poll_hz)
 
         # mutable robot state
         self._joints: np.ndarray | None = None
@@ -154,13 +169,21 @@ class RobotPolicy:
         self._p: int = 0  # ticks since last activation (for velocity ramp)
 
         # EMA constants depend on input mode
+        cfg.input = InputMode.GELLO
         match cfg.input:
             case InputMode.GELLO | InputMode.SPACEMOUSE:
-                self._ema = 5.0 / cfg.hz
+                # n ticks to reach ~99% of new value, i.e. 0.2s time constant at 200Hz
+                # ticks = cfg.hz/4
+                # self._ema = ticks/cfg.hz
+                self._ema = 0.95
                 self._gema = 1.0  # no gripper smoothing for teleop
             case InputMode.MODEL | InputMode.HELEO:
-                self._ema = 8.0 / cfg.hz
-                self._gema = self._ema
+                self._ema = 0.95
+                self._gema = 0.95
+                # self._gema = 1.0
+
+                # self._ema = 8.0 / cfg.hz
+                # self._gema = self._ema
 
     @property
     def active(self) -> bool:
@@ -197,7 +220,10 @@ class RobotPolicy:
             g = self._grip
             self._leader = np.array([*self._joints.tolist(), g])  # smooth start
         else:
+            # self._leader = raw # this turns off smoothing
+            # return
             self._leader[:-1] = raw[:-1] * self._ema + self._leader[:-1] * (1 - self._ema)
+            # self._leader[-1] = raw[-1] * self._ema + self._leader[-1] * (1 - self._ema)
             self._leader[-1] = raw[-1]  # gripper passed through; gema applied in step_gripper
 
     def on_active(self, active: bool) -> None:
@@ -207,7 +233,7 @@ class RobotPolicy:
         self._leader = None
         self._grip = 1.0
         self.home.angle = np.array(self.home.angle)
-        self.acc.velocity = np.zeros_like(self.acc.velocity)
+        self.acc.reset()
 
     def tick(self) -> None:
         """Advance the period counter; call once per control cycle."""
@@ -225,10 +251,7 @@ class RobotPolicy:
         if (self._joints == self._leader[:-1]).all():
             return False  # no movement, so skip
 
-        if self.acc.i == 0:
-            self.acc.position = self._joints.copy()
-            self.acc.velocity = np.zeros_like(self._joints)
-        self.acc.position = self._joints.copy()
+        self.acc.sync(self._joints, reset_velocity=self.acc.i == 0)
 
         goal = self._leader[:-1] if self._active else np.array(self.home.angle)
         out = self.acc.step(goal)
