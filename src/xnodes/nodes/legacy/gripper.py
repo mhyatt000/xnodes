@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from threading import Lock
+import time
 from typing import Protocol
 
 from control_msgs.action import GripperCommand
@@ -268,7 +269,7 @@ class GripperController:
                 callback_group=self._write_group,
             )
             self.setup()
-            activator.add_hook(lambda _active: self._driver.clean_gripper_error())
+            activator.add_hook(self._on_active)
 
     @property
     def logger(self):
@@ -277,6 +278,21 @@ class GripperController:
     @property
     def driver(self) -> RobotDriver:
         return self._driver
+
+    def _on_active(self, active: bool) -> None:
+        self._driver.clean_gripper_error()
+        if self._read_timer is None:
+            return
+        if active:
+            # self._read_timer.reset()
+            time.sleep(1)  # Let the gripper stabilize before commanding it.
+            self._write_timer.reset()
+        else:
+            with self._state_lock:
+                self._pending_cmd = None
+            self._driver.set_gripper_position(self._cfg.grip_max, wait=False)
+            # self._read_timer.cancel()
+            self._write_timer.cancel()
 
     def setup(self) -> None:
         if not self._cfg.use_gripper:
