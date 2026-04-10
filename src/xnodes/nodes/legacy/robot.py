@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from builtin_interfaces.msg import Duration
 from control_msgs.msg import JointJog
 from geometry_msgs.msg import TwistStamped
 import numpy as np
@@ -8,6 +9,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 import tyro
 from xarm_msgs.msg import RobotMsg
 
@@ -55,6 +57,10 @@ class Xarm(Node):
         self.timer = self.create_timer(1 / cfg.hz, self._tick)
         self.timer.cancel()
         self.activators["estop"].add_hook(lambda active: self.timer.cancel() if not active else self.timer.reset())
+        self.activators["estop"].add_hook(self.gripper._on_active)
+
+        # publisher
+        self.traj_pub = self.create_publisher(JointTrajectory, "/xarm7_traj_controller/joint_trajectory", 10)
 
         self.get_logger().info("Robot Node Initialized.")
 
@@ -104,7 +110,11 @@ class Xarm(Node):
                     displacements, joint_names, velocities = result
                     # Keep a zero-motion heartbeat flowing once the streams are synchronized.
                     displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
-                    eps = 0.001
+                    # Per-joint clip: wrist joints (5-7) need more travel per tick than shoulder/elbow.
+                    t1, t2, t3 = 0.08, 0.1, 0.15  # teleop
+                    t1, t2, t3 = 0.04, 0.05, 0.15  # mid
+                    t1, t2, t3 = 0.01, 0.01, 0.10  # slow/safe
+                    eps = np.array([t1, t1, t1, t2, t2, t3, t3])
                     displacements = np.clip(displacements, -eps, eps).tolist()
                     # self.logger.info("after")
                     # self.logger.info(f"displ: {(self.policy._leader[:-1]-self.policy._joints).round(2)}")
@@ -112,13 +122,27 @@ class Xarm(Node):
                     # self.logger.info(f"{self.policy._joint_names}")
                     # self.logger.info("")
                     # self.logger.info(f"{(self.policy._joints).round(2)}")
+
+                # in _tick, replace JointJog publish:
+                target = (self.policy._joints + np.array(displacements)).tolist()
+                msg = JointTrajectory()
+                msg.header.stamp = self.get_clock().now().to_msg()
+                msg.header.frame_id = "link_base"
+                msg.joint_names = joint_names
+                pt = JointTrajectoryPoint()
+                pt.positions = target
+                pt.time_from_start = Duration(sec=0, nanosec=20_000_000)  # 20ms
+                msg.points = [pt]
+                self.traj_pub.publish(msg)
+
                 msg = JointJog()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = "link_base"
-                msg.displacements = displacements
+                # msg.displacements = displacements
+                # servo_server can use velocities without displacement
                 msg.joint_names = joint_names
                 msg.velocities = velocities
-                self.jog_pub.publish(msg)
+                # self.jog_pub.publish(msg)
 
             case ControlMode.CARTESIAN:
                 result = self.policy.step_cartesian()
