@@ -103,7 +103,7 @@ def build_policy_payload(
     pose: np.ndarray,
     gripper: np.ndarray,
     images: Mapping[str, np.ndarray],
-    ensemble: bool = False,
+    _ensemble: bool = False,
 ) -> dict[str, Any]:
     if np.any(gripper > 1.0):
         raise ValueError("Gripper out of bounds")
@@ -112,6 +112,10 @@ def build_policy_payload(
     pose_m[:3] /= 1000.0  # mm -> m
 
     state = build_idle_target(joints, gripper).astype(np.float32)
+    pose_and_state = np.concatenate(
+        [pose_m.reshape(1, 1, -1), state.reshape(1, 1, -1)],
+        axis=-1,
+    )
     pixels = {k: v.astype(np.uint8) for k, v in images.items()}
     obs = {
         "pixels": {k: v.reshape(1, *v.shape) for k, v in pixels.items()},
@@ -119,15 +123,21 @@ def build_policy_payload(
     }
     return {
         "observation": {
-            "image_left_wrist": obs["pixels"]["wrist"][None],
-            "image_primary": obs["pixels"]["low"][None],
-            "image_side": obs["pixels"]["side"][None],
-            "proprio_single_arm": np.concatenate(
-                [pose_m.reshape(1, 1, -1), state.reshape(1, 1, -1)],
-                axis=-1,
-            ),
+            # "image_left_wrist": obs["pixels"]["wrist"][None],
+            # "image_primary": obs["pixels"]["low"][None],
+            # "image_side": obs["pixels"]["side"][None],
+            # "proprio_joints": pose_and_state[..., -8:-1],
+            # "proprio_gripper": pose_and_state[..., -1:],
+            "image": obs["pixels"],
+            "proprio": {
+                "joints": joints.astype(np.float32, copy=True).reshape(1, -1),
+                "gripper": gripper.astype(np.float32, copy=True).reshape(1, -1),
+                "position": pose_m[..., :3].reshape(1, -1),
+                "orientation": pose_m[..., 3:].reshape(1, -1),
+                # 'pose': pose_m.reshape(1, -1),
+            },
         },
-        "ensemble": ensemble,
+        # "ensemble": ensemble,
     }
 
 
@@ -143,3 +153,28 @@ def extract_action_targets(actions: Mapping[str, Any], resolution: int) -> np.nd
     act = np.asarray(actions[key]).copy()
     act = act.reshape(-1, act.shape[-1])  # ensure 2D
     return act[::resolution].copy()
+
+
+def resolve_action_representation(
+    targets: np.ndarray,
+    *,
+    rep: ActionRepresentation,
+    joints: np.ndarray,
+    gripper: np.ndarray,
+) -> np.ndarray:
+    act = np.asarray(targets, dtype=np.float32)
+    if act.ndim != 2:
+        msg = "targets must be a 2D array"
+        raise ValueError(msg)
+
+    if rep is ActionRepresentation.ABS:
+        return act.copy()
+
+    base = build_idle_target(
+        np.asarray(joints, dtype=np.float32),
+        np.asarray(gripper, dtype=np.float32),
+    ).reshape(1, -1)
+    if act.shape[-1] != base.shape[-1]:
+        msg = f"target width {act.shape[-1]} does not match state width {base.shape[-1]}"
+        raise ValueError(msg)
+    return act + base

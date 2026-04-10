@@ -15,6 +15,7 @@ __all__ = [
     "extract_action_targets",
     "extract_camera_images",
     "missing_camera_images",
+    "resolve_action_representation",
 ]
 
 
@@ -32,6 +33,7 @@ def __getattr__(name: str) -> Any:
         "extract_action_targets",
         "extract_camera_images",
         "missing_camera_images",
+        "resolve_action_representation",
     }
     if name in model_exports:
         module = import_module(".model_client", __name__)
