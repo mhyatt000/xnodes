@@ -5,7 +5,6 @@ import threading
 import typing
 from typing import Any
 
-import cv2
 from cv_bridge import CvBridge
 from geometry_msgs.msg import TransformStamped
 import jax
@@ -15,6 +14,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data
 from rich import print
+from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32MultiArray
 from tf2_ros import Buffer, TransformException, TransformListener
@@ -27,7 +27,6 @@ from xnodes.core.model_client import (
     CAMERA_KEYS,
     CAMERA_POSTFIX,
     CAMERA_PREFIX,
-    extract_action_targets,
     missing_camera_images,
     ModelClientConfig,
     NOMODEL,
@@ -51,6 +50,12 @@ PyTree: typing.TypeAlias = dict[str, np.ndarray] | list[np.ndarray]
 
 def spec(x: PyTree):
     return jax.tree.map(lambda y: y.shape if isinstance(y, np.ndarray) else type(y), x)
+
+
+def amend_policy_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["dof_ids"] = np.arange(1, 9, dtype=np.int32)
+    payload["chunk_steps"] = np.arange(20, dtype=np.int32)
+    return payload
 
 
 class TfLookup:
@@ -103,13 +108,15 @@ class CameraStreams:
         return self._topics
 
     def snapshot(self) -> dict[str, np.ndarray | None]:
-        with self._lock:
-            return {key: None if frame is None else frame.copy() for key, frame in self._frames.items()}
+        # with self._lock:
+        return {key: None if frame is None else frame.copy() for key, frame in self._frames.items()}
 
     def _set_image(self, msg: Image, key: str) -> None:
-        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        with self._lock:
-            self._frames[key] = frame
+        # TODO why are we using bgr here?
+        # frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        # with self._lock:
+        self._frames[key] = frame
         if key not in self._seen:
             self._node.get_logger().info(f"Accepted image stream {key} from {self._topics[key]}")
             self._seen.add(key)
@@ -153,7 +160,7 @@ class Model(Base):
         self.cmd_hz = float(self.declare_parameter("cmd_hz", 10.0).value)  # command frequency
         self.resolution = int(self.declare_parameter("resolution", 1).value)  # every N predicted steps
         self.arm_dof = int(self.declare_parameter("arm_dof", 7).value)
-        self.joint_topic = str(self.declare_parameter("joint_topic", "/joint_states").value)
+        self.joint_topic = str(self.declare_parameter("joint_topic", "/xarm/joint_states").value)
         self.pose_topic = str(self.declare_parameter("pose_topic", "/xarm/robot_states").value)
         self.gripper_topic = str(self.declare_parameter("gripper_topic", "/xgym/gripper").value)
         self.state_topic = str(self.declare_parameter("state_topic", "/gello/state").value)
@@ -199,8 +206,8 @@ class Model(Base):
         self.tf = TfLookup(self)
 
         self.moveit_sub = self.create_subscription(JointState, self.joint_topic, self.set_joints, 10)
-        # self.moveit_pose_sub = self.create_subscription(RobotMsg, self.pose_topic, self.set_pose, 10)
-        self.moveit_pose_t = self.create_timer(0.1, self.request_pose)  # polling tf for pose
+        self.moveit_pose_sub = self.create_subscription(RobotMsg, self.pose_topic, self.set_pose, 10)
+        # self.moveit_pose_t = self.create_timer(0.1, self.request_pose)  # polling tf for pose
         self.gripper_sub = self.create_subscription(Float32MultiArray, self.gripper_topic, self.set_gripper, 10)
         self.step_timer = self.create_timer(1 / self.req_hz, self.step, callback_group=self._step_group)
         self.publisher = self.create_publisher(JointState, self.state_topic, 10)
@@ -212,25 +219,32 @@ class Model(Base):
 
     def set_active(self, msg):
         super().set_active(msg)
-        with self._lock:
-            self._reset = False  # send reset signal to command thread
-            self.joints = None
-            self.pose = None
-            self.gripper = None
-        with self._cmd_lock:
-            self.targets = None
+        # with self._lock:
+        self._reset = False  # send reset signal to command thread
+        self.joints = None
+        self.pose = None
+        self.gripper = None
+        # with self._cmd_lock:
+        self.targets = None
 
     def request_pose(self):
-        pose = self.tf.xyz("world", "link_tcp")
-        if pose is not None:
-            msg = RobotMsg()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.pose = list(pose) + [0.0] * 3  # pad to 6dof
-            self.set_pose(msg)
+        tf = self.tf.lookup("world", "link_tcp")
+        if tf is None:
+            return
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        xyz = np.array([t.x, t.y, t.z], dtype=np.float32)
+        rpy = R.from_quat([q.x, q.y, q.z, q.w]).as_euler("xyz", degrees=False).astype(np.float32)
+        pose = np.concatenate([xyz, rpy]).tolist()
+        # self.logger.info(f"Requested pose: {pose}")
+        msg = RobotMsg()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose = pose
+        self.set_pose(msg)
 
     def set_gripper(self, msg: Float32MultiArray):
-        with self._lock:
-            self.gripper = np.array(msg.data).astype(np.float32)
+        # with self._lock:
+        self.gripper = np.array(msg.data).astype(np.float32)
 
     def set_pose(self, msg: RobotMsg):
         """
@@ -239,8 +253,8 @@ class Model(Base):
             pose: List[float64]
             ...others...
         """
-        with self._lock:
-            self.pose = np.array(msg.pose).astype(np.float32)
+        # with self._lock:
+        self.pose = np.array(msg.pose).astype(np.float32)
 
     def set_joints(self, msg: JointState):
         """
@@ -252,7 +266,10 @@ class Model(Base):
             effort: List[float64]
         """
         joints = np.asarray(msg.position, dtype=np.float32)
+        # self.logger.info(f"Received joints: {joints.round(2)}")
         names = list(msg.name)
+        self.joints = joints[: self.arm_dof]  # it publishes the drive joints too sometimes
+        return
 
         if len(joints) != self.arm_dof and names:
             joint_map = dict(zip(names, joints, strict=False))
@@ -282,13 +299,13 @@ class Model(Base):
         # self.joint_names = msg.name
 
     def step(self):
-        with self._lock:
-            joints = None if self.joints is None else self.joints.copy()
-            pose = None if self.pose is None else self.pose.copy()
-            gripper = None if self.gripper is None else self.gripper.copy()
-            active = self.active
-            reset = self._reset
-            self.logger.info("enter step")
+        # with self._lock:
+        joints = None if self.joints is None else self.joints.copy()
+        pose = None if self.pose is None else self.pose.copy()
+        gripper = None if self.gripper is None else self.gripper.copy()
+        active = self.active
+        reset = self._reset
+        self.logger.info("enter step")
 
         imgs = self.cameras.snapshot()
         self.logger.info(f"snapshot got: {spec(imgs)}")
@@ -317,10 +334,10 @@ class Model(Base):
             missing_topics = {key: self.cameras.topics[key] for key in missing}
             self.logger.info(f"Missing images: {missing_topics}")
             return
-        imgs = jax.tree.map(lambda img: cv2.resize(img, (64, 64)) if img is not None else None, imgs)  # resize 64,64
         self.logger.info(f"snapshot got: {spec(imgs)}")
 
         try:
+            self.logger.info(f"gripper: {gripper}")
             payload = build_policy_payload(
                 joints=joints,
                 pose=pose,
@@ -328,25 +345,31 @@ class Model(Base):
                 images={k: v for k, v in imgs.items() if v is not None},
                 ensemble=self.cfg.ensemble,
             )
-            payload["observation"]["proprio_single"] = payload["observation"].pop("proprio_single_arm")[
-                ..., -(self.arm_dof + 1) :
-            ]  # trim to expected arm dof
-            self.logger.info(f"policy proprio: {payload['observation']['proprio_single']}")
+            # payload = amend_policy_payload(payload) # handled server-side for now
+            self.logger.info(f"policy proprio joints: {payload['observation']['proprio']['joints']}")
+            self.logger.info(f"policy proprio gripper: {payload['observation']['proprio']['gripper']}")
+            self.logger.info(f"policy proprio pose: {payload['observation']['proprio']['position']}")
         except ValueError as exc:
             self.logger.info(f"Payload error: {exc}")
             return
 
-        self.logger.info(f"Policy payload: joints={spec(payload)}")
-        actions: dict[str, Any] = self.policy.step(payload)
+        self.logger.info(f"Policy payload: {spec(payload)}")
+        actions: dict[str, Any] = self.policy.step(payload)["actions"]  # debugger
         self.logger.info(f"Policy actions: {spec(actions)}")
-        try:
-            targets = extract_action_targets(actions, resolution=self.resolution)
-        except (KeyError, TypeError, ValueError) as exc:
-            self.logger.info(f"Action parse error: {exc}")
-            return
+        # stack ax=-1 joints,gripper
+        self.logger.info(f"{joints.shape} {gripper.shape}")
+        # targets = actions[...,:8].reshape(-1, 8)  # extract arm joints
+        actions["gripper"] = np.clip(
+            actions["gripper"], 0.05, 1.0
+        )  # ensure gripper in [0,1] ... clip to 0.05 (42 grip) to avoid fully close
+        targets = np.concatenate([actions["joints"], actions["gripper"]], axis=-1).reshape(-1, self.arm_dof + 1)
+        # targets = targets[:5] # limit to 5 steps in chunk rn
+        # self.logger.info(f"Extracted targets: {spec(actions)}")
+        self.logger.info(f"Extracted targets: {spec(targets)}")
+        # extract_joint_gripper_targets(actions, resolution=self.resolution)[0:]
         with self._cmd_lock:
             self.targets = targets
-        self.logger.info(f"Step complete. targets={spec(self.targets)}")
+        self.logger.info(f"Step complete. targets={self.targets}")
 
     def reset(self):
         with self._lock:
@@ -354,7 +377,6 @@ class Model(Base):
 
     def command(self):
         """Publishes model action"""
-        self.logger.debug("tick command")
         with self._cmd_lock:
             targets = self.targets
             if targets is not None and len(targets) > 0:
@@ -369,13 +391,16 @@ class Model(Base):
             self.logger.debug("No last target available. Skipping command.")
             return
 
+        with self._cmd_lock:
+            self.last_target = np.asarray(target).copy()
+        remain = len(self.targets) if self.targets is not None else 0
+        # self.logger.info(f"Remain: {remain} | command={np.array(target).round(2)} deg={np.rad2deg(target).round(1)}")
+        # self.logger.info(f"command={np.array(target).round(2)}")
+
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = [f"joint{i + 1}" for i in range(len(target))]
         msg.position = target.tolist()
-        with self._cmd_lock:
-            remain = len(self.targets) if self.targets is not None else 0
-        self.logger.info(f"Remain: {remain} | command={np.array(target).round(2)} deg={np.rad2deg(target).round(1)}")
         self.publisher.publish(msg)
 
 

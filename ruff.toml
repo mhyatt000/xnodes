@@ -41,6 +41,7 @@ ignore = [ # exceptions to select
     "E731",   # do not assign a lambda (style preference)
     "E722",   # do not use bare except (style preference)
     "E501",   # line too long (let the formatter handle wrapping)
+    "N817", # CamelCase `thing` imported as acronym `T`
     "UP035",
     "UP015", #  Unnecessary mode argument open('r') -> open()
     "UP031", # Use format specifiers instead of percent format
