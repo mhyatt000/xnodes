@@ -1,0 +1,12 @@
+recorder:
+  ros__parameters:
+    signal_topic: /xgym/active
+    output_dir: /tmp/episodes
+    flush_chunk_size: 32
+    buf_hz: 50.0
+    max_topic_age_ms: 5000.0
+    auto_discover_timeout_sec: 10.0
+    topics:
+      - /cam/low/image_raw
+      - /cam/side/image_raw
+      - /camera/camera/color/image_raw/compressed
