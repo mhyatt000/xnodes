@@ -1,42 +1,36 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from launch.actions import GroupAction
+from ament_index_python.packages import get_package_share_directory
+from launch.actions import DeclareLaunchArgument, GroupAction, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, PushRosNamespace
 from rich import print
+import yaml
 
 from launch import LaunchDescription
 
 
-def generate_launch_description():
-    # declare fps
-    # fps = DeclareLaunchArgument(
-    # "fps",
-    # default_value="30",
-    # description="Frames per second for the camera",
-    # )
+def _launch_setup(context):
+    params_file = Path(LaunchConfiguration("params_file").perform(context))
+    cfg = yaml.safe_load(params_file.read_text()) if params_file.exists() else {}
+    matches = cfg.get("launch", {}).get("ros__parameters", {}).get("matches", "cam_*")
 
     _links = Path().home() / ".xnodes" / "dev"
-    cam_links = sorted(_links.glob("cam*"))
+    cam_links = sorted(_links.glob(matches))
     print(_links, cam_links)
     if not cam_links:
         raise RuntimeError("No /dev/cam* symlinks found")
 
-    print(cam_links)
     fps, width, height = 30.0, 640, 480
     nodes = []
 
-    root = Path(os.environ["PIXI_PROJECT_ROOT"])
-    # params_file = root / "config" / "cam.yaml"
-    # usb_cam/config/params.yaml
     config = Path().home().resolve() / ".xnodes"
 
     for i, dev in enumerate(cam_links):
         name = dev.name.replace("cam_", "")
-        dev = dev.resolve()
-        vname = dev.name
+        resolved = dev.resolve()
         nodes.append(
             Node(
                 package="usb_cam",
@@ -44,10 +38,9 @@ def generate_launch_description():
                 name=f"{name}_camera",
                 namespace=name,
                 parameters=[
-                    # params_file,
                     {
                         "output_encoding": "rgb8",
-                        "video_device": str(dev),
+                        "video_device": str(resolved),
                         "image_size": [640, 480],
                         "frame_id": f"{name}_optical_frame",
                         "camera_info_url": f"file://{config}/camera_info/{name}.yaml",
@@ -59,12 +52,17 @@ def generate_launch_description():
             )
         )
 
-    # global namespace grouping
-    group = GroupAction(
+    group = GroupAction([PushRosNamespace("cam"), *nodes])
+    return [group]
+
+
+def generate_launch_description():
+    pkg_share = Path(get_package_share_directory("xnodes"))
+    default_params_file = str(pkg_share / "config" / "multicam.yaml")
+
+    return LaunchDescription(
         [
-            PushRosNamespace("cam"),
-            *nodes,
+            DeclareLaunchArgument("params_file", default_value=default_params_file),
+            OpaqueFunction(function=_launch_setup),
         ]
     )
-
-    return LaunchDescription([group])
