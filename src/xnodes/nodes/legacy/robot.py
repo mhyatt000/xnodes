@@ -112,8 +112,8 @@ class Xarm(Node):
                     displacements = np.array(self.policy._leader[:-1] - self.policy._joints).round(2)
                     # Per-joint clip: wrist joints (5-7) need more travel per tick than shoulder/elbow.
                     t1, t2, t3 = 0.08, 0.1, 0.15  # teleop
-                    t1, t2, t3 = 0.04, 0.05, 0.15  # mid
-                    t1, t2, t3 = 0.01, 0.01, 0.10  # slow/safe
+                    #t1, t2, t3 = 0.04, 0.05, 0.15  # mid
+                    #t1, t2, t3 = 0.01, 0.01, 0.10  # slow/safe
                     eps = np.array([t1, t1, t1, t2, t2, t3, t3])
                     displacements = np.clip(displacements, -eps, eps).tolist()
                     # self.logger.info("after")

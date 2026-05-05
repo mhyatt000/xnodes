@@ -11,5 +11,6 @@ recorder:
       - /xarm/robot_states
       - /xgym/gripper
       - /cam/low/image_raw
+      - /cam/brio
       - /cam/side/image_raw
       - /camera/camera/color/image_raw/compressed
