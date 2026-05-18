@@ -1,0 +1,11 @@
+valid_ports:
+  - /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT3M9NVB-if00-port0
+  - /dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT94W6IZ-if00-port0
+
+dynamixel_config:
+  # xArm GELLO leader. joint_offsets_pi_over_2 values are multiplied by pi / 2.
+  joint_ids: [1, 2, 3, 4, 5, 6, 7]
+  joint_offsets_pi_over_2: [3, 3, 6, 1, 2, 1, 0]
+  joint_signs: [1, 1, 1, 1, 1, 1, 1]
+  # [gripper_joint_id, open_degrees, closed_degrees]
+  gripper_config: [8, 153, 196]

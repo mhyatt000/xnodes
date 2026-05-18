@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch_ros.substitutions import FindPackageShare
 
 from launch import LaunchDescription
 
@@ -10,11 +11,22 @@ def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _append_option(cmd: list[str], name: str, value: str) -> None:
+    if value:
+        cmd.extend([name, value])
+
+
+def _append_flag(cmd: list[str], name: str, enabled: bool) -> None:
+    if enabled:
+        cmd.append(name)
+
+
 def _build_xgello(_context, *_, **__):
     hz = LaunchConfiguration("hz").perform(_context)
     robot_port = LaunchConfiguration("robot_port").perform(_context)
     hostname = LaunchConfiguration("hostname").perform(_context)
     gello_port = LaunchConfiguration("gello_port").perform(_context)
+    gello_config = LaunchConfiguration("gello_config").perform(_context)
     robot_type = LaunchConfiguration("robot_type").perform(_context)
     start_joints = LaunchConfiguration("start_joints").perform(_context)
 
@@ -37,24 +49,16 @@ def _build_xgello(_context, *_, **__):
         hostname,
     ]
 
-    if gello_port:
-        cmd.extend(["--gello-port", gello_port])
-    if robot_type:
-        cmd.extend(["--robot-type", robot_type])
-    if start_joints:
-        cmd.extend(["--start-joints", start_joints])
-    if torque:
-        cmd.append("--torque")
-    if mock:
-        cmd.append("--mock")
-    if use_save_interface:
-        cmd.append("--use-save-interface")
-    if bimanual:
-        cmd.append("--bimanual")
-    if verbose:
-        cmd.append("--verbose")
-    if not safety:
-        cmd.append("--no-safety")
+    _append_option(cmd, "--gello-port", gello_port)
+    _append_option(cmd, "--gello-config", gello_config)
+    _append_option(cmd, "--robot-type", robot_type)
+    _append_option(cmd, "--start-joints", start_joints)
+    _append_flag(cmd, "--torque", torque)
+    _append_flag(cmd, "--mock", mock)
+    _append_flag(cmd, "--use-save-interface", use_save_interface)
+    _append_flag(cmd, "--bimanual", bimanual)
+    _append_flag(cmd, "--verbose", verbose)
+    _append_flag(cmd, "--no-safety", not safety)
 
     return [ExecuteProcess(cmd=cmd, output="screen", emulate_tty=True)]
 
@@ -66,6 +70,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("robot_port", default_value="6001", description="ZMQ robot port"),
             DeclareLaunchArgument("hostname", default_value="127.0.0.1", description="Robot host"),
             DeclareLaunchArgument("gello_port", default_value="", description="Serial port for the Gello device"),
+            DeclareLaunchArgument(
+                "gello_config",
+                default_value=PathJoinSubstitution([FindPackageShare("xnodes"), "config", "gello.yaml"]),
+                description="Local GELLO Dynamixel config YAML",
+            ),
             DeclareLaunchArgument(
                 "robot_type", default_value="", description="Optional robot type passed through to the CLI"
             ),

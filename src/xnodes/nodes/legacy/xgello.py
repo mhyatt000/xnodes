@@ -4,13 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 
-from gello.agents.gello_agent import GelloAgent
+from gello.agents.gello_agent import DynamixelRobotConfig, GelloAgent
 from gello.env import RobotEnv
 from gello.zmq_core.robot_node import ZMQClientRobot
 import numpy as np
 import rclpy
 from sensor_msgs.msg import JointState
 import tyro
+import yaml
 
 from xnodes.nodes.legacy.base import Base
 
@@ -26,6 +27,7 @@ class GelloArgs:
     torque: bool = False
 
     gello_port: str | None = None
+    gello_config: Path | None = None
     mock: bool = False
     use_save_interface: bool = False
     data_dir: str = "~/bc_data"
@@ -44,8 +46,16 @@ class Gello(Base):
         self.port = args.gello_port or self._find_port()
         logger.info(f"Using port {self.port}")
 
+        config_path = resolve_gello_config_path(args.gello_config)
+        dynamixel_config = load_dynamixel_config(config_path, port=self.port)
+        if dynamixel_config is None:
+            msg = f"{config_path} must define a GELLO dynamixel_config"
+            raise ValueError(msg)
+        logger.info(f"Using local GELLO config {config_path}")
+
         self.agent = GelloAgent(
             port=self.port,
+            dynamixel_config=dynamixel_config,
             start_joints=args.start_joints,
         )
         self.agent._robot.set_torque_mode(args.torque)
@@ -86,7 +96,7 @@ class Gello(Base):
 
 
 def build_env(args: GelloArgs) -> RobotEnv:
-    reset_joints = args.start_joints
+    reset_joints = None if args.start_joints is None else np.array(args.start_joints)
     if reset_joints is None:
         reset_joints = np.deg2rad([0, -90, 90, -90, -90, 0, 0])
 
@@ -105,6 +115,54 @@ def build_env(args: GelloArgs) -> RobotEnv:
             time.sleep(0.001)
 
     return env
+
+
+def resolve_gello_config_path(path: Path | None) -> Path:
+    if path is not None:
+        return path.expanduser()
+
+    cwd_config = Path("config/gello.yaml")
+    if cwd_config.exists():
+        return cwd_config
+
+    try:
+        from ament_index_python.packages import get_package_share_directory
+
+        return Path(get_package_share_directory("xnodes")) / "config" / "gello.yaml"
+    except Exception:
+        return cwd_config
+
+
+def load_dynamixel_config(path: Path, port: str | None = None) -> DynamixelRobotConfig | None:
+    if not path.exists():
+        return None
+
+    data = yaml.safe_load(path.read_text()) or {}
+    valid_ports = data.get("valid_ports", [])
+    if port is not None and valid_ports and port not in valid_ports:
+        ports = "\n  ".join(str(p) for p in valid_ports)
+        msg = f"{path} does not define GELLO port {port}. Valid ports:\n  {ports}"
+        raise ValueError(msg)
+
+    cfg = data.get("dynamixel_config") or data.get("dynamixel") or data.get("agent", {}).get("dynamixel_config")
+    if cfg is None:
+        return None
+
+    offsets = cfg.get("joint_offsets")
+    if offsets is None and "joint_offsets_pi" in cfg:
+        offsets = [float(x) * np.pi for x in cfg["joint_offsets_pi"]]
+    if offsets is None and "joint_offsets_pi_over_2" in cfg:
+        offsets = [float(x) * np.pi / 2 for x in cfg["joint_offsets_pi_over_2"]]
+    if offsets is None:
+        msg = f"{path} must define joint_offsets, joint_offsets_pi, or joint_offsets_pi_over_2"
+        raise ValueError(msg)
+
+    return DynamixelRobotConfig(
+        joint_ids=tuple(int(x) for x in cfg["joint_ids"]),
+        joint_offsets=tuple(float(x) for x in offsets),
+        joint_signs=tuple(int(x) for x in cfg["joint_signs"]),
+        gripper_config=tuple(cfg["gripper_config"]),
+    )
 
 
 def startup(agent: GelloAgent, env: RobotEnv, args: GelloArgs) -> None:
