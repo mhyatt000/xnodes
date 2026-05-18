@@ -18,7 +18,10 @@ def _launch_setup(context):
     matches = cfg.get("launch", {}).get("ros__parameters", {}).get("matches", "cam_*")
 
     _links = Path().home() / ".xnodes" / "dev"
-    cam_links = sorted(_links.glob(matches))
+    if isinstance(matches, list):
+        cam_links = sorted(p for name in matches for p in _links.glob(f"cam_{name}"))
+    else:
+        cam_links = sorted(_links.glob(matches))
     print(_links, cam_links)
     if not cam_links:
         raise RuntimeError("No /dev/cam* symlinks found")
