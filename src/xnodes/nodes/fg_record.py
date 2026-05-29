@@ -150,6 +150,7 @@ class FgRecordFlex(Node):
 
     def _start_episode(self) -> None:
         path = self._next_path()
+        self._episode_path = path
         self._ctx = foxglove.Context()
         self._mcap = foxglove.open_mcap(str(path), context=self._ctx)
         self._channels.clear()
@@ -195,7 +196,7 @@ class FgRecordFlex(Node):
             self._mcap = None
 
             log = self.get_logger()
-            log.info("Episode stopped")
+            log.info(f"Episode stopped: {self._episode_path}")
             log.info("--- metadata ---")
             for k, v in {**self._episode_meta, **end_meta}.items():
                 log.info(f"  {k}: {v}")
