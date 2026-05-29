@@ -87,6 +87,7 @@ class FgRecordFlex(Node):
         self._pending = set(self._topic_names)
         self._discover_deadline_ns = self.get_clock().now().nanoseconds + int(discover_timeout * 1e9)
         self._discover_timer = self.create_timer(0.5, self._discovery_tick)
+        self.create_timer(1.0, self._status_tick)
 
         self._active = ActiveFlag(self, topic=signal_topic, toggle=signal_toggle, on_change=self._on_active)
 
@@ -128,6 +129,12 @@ class FgRecordFlex(Node):
 
         return cb
 
+    def _status_tick(self) -> None:
+        if not self._recording:
+            return
+        elapsed = (self.get_clock().now().nanoseconds - self._episode_start_ns) / 1e9
+        self.get_logger().info(f"Recording ... {elapsed:.1f}s")
+
     def _on_active(self, active: bool) -> None:
         if active and not self._recording:
             self._start_episode()
@@ -161,15 +168,13 @@ class FgRecordFlex(Node):
             self._channels[topic] = (channel, converter)
             self.get_logger().info(f"  {topic} ({ros_type}) [{schema}]")
 
-        self._mcap.write_metadata(
-            "episode",
-            {
-                "start_ns": str(self._episode_start_ns),
-                "note": self._note,
-                "topics": ",".join(self._topic_info.keys()),
-                "ros_types": ",".join(self._topic_info.values()),
-            },
-        )
+        self._episode_meta = {
+            "start_ns": str(self._episode_start_ns),
+            "note": self._note,
+            "topics": ",".join(self._topic_info.keys()),
+            "ros_types": ",".join(self._topic_info.values()),
+        }
+        self._mcap.write_metadata("episode", self._episode_meta)
 
         self._recording = True
         self.get_logger().info(f"Episode started: {path.name}")
@@ -180,18 +185,23 @@ class FgRecordFlex(Node):
         if self._mcap is not None:
             end_ns = self.get_clock().now().nanoseconds
             duration_ns = end_ns - self._episode_start_ns
-            self._mcap.write_metadata(
-                "episode_end",
-                {
-                    "end_ns": str(end_ns),
-                    "duration_ns": str(duration_ns),
-                    "duration_s": f"{duration_ns / 1e9:.3f}",
-                },
-            )
+            end_meta = {
+                "end_ns": str(end_ns),
+                "duration_ns": str(duration_ns),
+                "duration_s": f"{duration_ns / 1e9:.3f}",
+            }
+            self._mcap.write_metadata("episode_end", end_meta)
             self._mcap.close()
             self._mcap = None
+
+            log = self.get_logger()
+            log.info("Episode stopped")
+            log.info("--- metadata ---")
+            for k, v in {**self._episode_meta, **end_meta}.items():
+                log.info(f"  {k}: {v}")
+            log.info("----------------")
+
         self._ctx = None
-        self.get_logger().info("Episode stopped")
 
     def close(self) -> None:
         if self._recording:
