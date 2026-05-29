@@ -37,6 +37,7 @@ setup(
     package_dir={"": "src"},
     install_requires=[
         "numpy",
+        "PyYAML",
         "transforms3d",
     ],
     data_files=[
@@ -58,6 +59,8 @@ setup(
             "model = xnodes.nodes.legacy.model:run",
             "bridge = xnodes.nodes.bridge:run",
             "recorder = xnodes.nodes.recorder:main",
+            "mcap_record_flex = xnodes.nodes.mcap_record:main_flex",
+            "fg_record_flex = xnodes.nodes.fg_record:main_flex",
         ],
     },
     extras_require={
