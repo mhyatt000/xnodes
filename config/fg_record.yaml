@@ -1,0 +1,14 @@
+fg_record_flex:
+  ros__parameters:
+    signal_topic: /xgym/record
+    signal_toggle: true
+    output_dir: /tmp/episodes
+    note: base
+    auto_discover_timeout_sec: 10.0
+    topics:
+      - /xarm/joint_states
+      - /xarm/robot_states
+      - /xgym/gripper
+      - /cam/low/image_raw
+      - /cam/side/image_raw
+      - /cam/over/image_raw

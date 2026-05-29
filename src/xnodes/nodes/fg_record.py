@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import foxglove
 import foxglove.channels as fg_channels
-from foxglove.messages import CompressedImage, JointState, RawImage, Timestamp
+from foxglove.messages import CompressedImage, JointState, JointStates, RawImage, Timestamp
 import rclpy
 from rclpy.node import Node
 from rosidl_runtime_py.convert import message_to_ordereddict
@@ -41,21 +41,20 @@ def _to_compressed_image(msg) -> CompressedImage:
     )
 
 
-def _to_joint_state(msg) -> JointState:
-    return JointState(
+def _to_joint_states(msg) -> JointStates:
+    return JointStates(
         timestamp=_stamp(msg),
-        frame_id=msg.header.frame_id,
-        names=list(msg.name),
-        positions=list(msg.position),
-        velocities=list(msg.velocity),
-        efforts=list(msg.effort),
+        joints=[
+            JointState(name=n, position=p, velocity=v, effort=e)
+            for n, p, v, e in zip(msg.name, msg.position, msg.velocity, msg.effort)
+        ],
     )
 
 
 _DISPATCH: dict[str, tuple[type, Callable]] = {
     "sensor_msgs/msg/Image": (fg_channels.RawImageChannel, _to_raw_image),
     "sensor_msgs/msg/CompressedImage": (fg_channels.CompressedImageChannel, _to_compressed_image),
-    "sensor_msgs/msg/JointState": (fg_channels.JointStateChannel, _to_joint_state),
+    "sensor_msgs/msg/JointState": (fg_channels.JointStatesChannel, _to_joint_states),
 }
 
 
@@ -67,11 +66,13 @@ class FgRecordFlex(Node):
         self.declare_parameter("signal_topic", "/xgym/active")
         self.declare_parameter("topics", ["/chatter"])
         self.declare_parameter("auto_discover_timeout_sec", 10.0)
+        self.declare_parameter("signal_toggle", True)
 
         self._output_dir = Path(self.get_parameter("output_dir").get_parameter_value().string_value)
         self._note = self.get_parameter("note").get_parameter_value().string_value
         self._topic_names = [t for t in self.get_parameter("topics").get_parameter_value().string_array_value if t]
         signal_topic = self.get_parameter("signal_topic").get_parameter_value().string_value
+        signal_toggle = self.get_parameter("signal_toggle").get_parameter_value().bool_value
         discover_timeout = self.get_parameter("auto_discover_timeout_sec").get_parameter_value().double_value
 
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -87,7 +88,7 @@ class FgRecordFlex(Node):
         self._discover_deadline_ns = self.get_clock().now().nanoseconds + int(discover_timeout * 1e9)
         self._discover_timer = self.create_timer(0.5, self._discovery_tick)
 
-        self._active = ActiveFlag(self, topic=signal_topic, toggle=True, on_change=self._on_active)
+        self._active = ActiveFlag(self, topic=signal_topic, toggle=signal_toggle, on_change=self._on_active)
 
     def _discovery_tick(self) -> None:
         if not self._pending:
