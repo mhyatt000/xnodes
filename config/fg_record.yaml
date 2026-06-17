@@ -2,7 +2,7 @@ fg_record_flex:
   ros__parameters:
     signal_topic: /xgym/record
     signal_toggle: true
-    output_dir: /tmp/episodes
+    output_dir: /data/fast/episodes  # /tmp/episodes
     note: base
     auto_discover_timeout_sec: 10.0
     topics:
