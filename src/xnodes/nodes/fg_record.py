@@ -58,6 +58,20 @@ _DISPATCH: dict[str, tuple[type, Callable]] = {
 }
 
 
+_EPISODE_INDEX_RE = re.compile(r"(?:^|_)(\d{6})(?:_|\Z)")
+
+
+def _episode_index(path: Path, date: str) -> int | None:
+    stem = path.stem
+    if stem.startswith(f"{date}_episode_"):
+        match = re.search(r"_episode_(\d{6})(?:_|\Z)", stem)
+    elif stem.startswith(f"{date}-"):
+        match = _EPISODE_INDEX_RE.search(stem)
+    else:
+        return None
+    return int(match.group(1)) if match else None
+
+
 class FgRecordFlex(Node):
     def __init__(self):
         super().__init__("fg_record_flex")
@@ -142,11 +156,16 @@ class FgRecordFlex(Node):
             self._stop_episode()
 
     def _next_path(self) -> Path:
-        date = datetime.now().strftime("%y%m%d")
-        existing = list(self._output_dir.glob(f"{date}_episode_*.mcap"))
-        indices = [int(m.group(1)) for f in existing if (m := re.search(r"episode_(\d+)", f.stem))]
+        now = datetime.now()
+        date = now.strftime("%y%m%d")
+        stamp = now.strftime("%y%m%d-%H%M%S")
+        indices = [
+            idx
+            for path in self._output_dir.glob(f"{date}*.mcap")
+            if (idx := _episode_index(path, date)) is not None
+        ]
         idx = (max(indices) + 1) if indices else 0
-        return self._output_dir / f"{date}_episode_{idx:06d}_{self._note}.mcap"
+        return self._output_dir / f"{stamp}_{idx:06d}_{self._note}.mcap"
 
     def _start_episode(self) -> None:
         path = self._next_path()

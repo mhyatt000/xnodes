@@ -27,7 +27,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "params_file",
                 default_value=default_params,
-                description="Path to fg_record_flex params YAML",
+                description=(
+                    "Path to fg_record_flex params YAML; recordings are named "
+                    "YYMMDD-hhmmss_<episode index>_<note>.mcap"
+                ),
             ),
             node,
         ]
