@@ -1,7 +1,7 @@
 model:
   ros__parameters:
-    host: none
-    port: 8000
+    host: localhost
+    port: 8081
     rep: ABS
     task: none
     ensemble: false

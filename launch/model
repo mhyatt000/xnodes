@@ -14,8 +14,6 @@ def generate_launch_description() -> LaunchDescription:
     pkg_share = Path(get_package_share_directory("xnodes"))
     default_params = str(pkg_share / "config" / "model.yaml")
 
-    host = LaunchConfiguration("host")
-    port = LaunchConfiguration("port")
     rep = LaunchConfiguration("rep")
     task = LaunchConfiguration("task")
     ensemble = LaunchConfiguration("ensemble")
@@ -29,8 +27,6 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[
             params_file,
             {
-                "host": host,
-                "port": port,
                 "rep": rep,
                 "task": task,
                 "ensemble": ensemble,
@@ -41,8 +37,6 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("host", default_value="none"),
-            DeclareLaunchArgument("port", default_value="8000"),
             DeclareLaunchArgument("rep", default_value="REL", choices=["REL", "ABS"]),
             DeclareLaunchArgument("task", default_value="none"),
             DeclareLaunchArgument("ensemble", default_value="False"),
