@@ -1,3 +1,3 @@
 launch:
   ros__parameters:
-    matches: "cam_*"
+    matches: "cam_[bls]*"

@@ -6,7 +6,10 @@ from datetime import datetime
 import json
 import math
 from pathlib import Path
+import queue
 import re
+import threading
+import time
 from typing import Any
 
 from builtin_interfaces.msg import Time
@@ -302,6 +305,8 @@ class RecordNode(Node):
         self._flush_payload_stamps: dict[str, list[int]] = defaultdict(list)
         self._episode_start_ns: int | None = None
         self._episode_samples = 0
+        self._flush_queue: queue.Queue | None = None
+        self._flush_thread: threading.Thread | None = None
 
         self._active_flag = ActiveFlag(self, topic=self.signal_topic, toggle=True, on_change=self._signal_cb)
 
@@ -374,17 +379,30 @@ class RecordNode(Node):
         self.recording = True
         self._episode_start_ns = now_ns(self)
         self._episode_samples = 0
-        self._flush_step_times.clear()
-        self._flush_payloads.clear()
-        self._flush_payload_stamps.clear()
+        self._flush_step_times = []
+        self._flush_payloads = defaultdict(list)
+        self._flush_payload_stamps = defaultdict(list)
         self.writer = EpisodeWriter(self.output_dir, self.episode_idx, self.flush_chunk_size)
         self.writer.store.attrs["configured_topics"] = list(self.topic_names)
         discovered_types = {t: s.ros_type for t, s in self.topic_states.items()}
         self.writer.store.attrs["discovered_types"] = json.dumps(discovered_types)
+
+        self._flush_queue = queue.Queue()
+        self._flush_thread = threading.Thread(
+            target=self._flush_worker, name="recorder-flush", daemon=True
+        )
+        self._flush_thread.start()
+
         self.get_logger().info(f"start episode {self.episode_idx:06d}")
 
     def _stop_episode(self) -> None:
+        # Snapshot any final partial batch onto the queue, then drain.
         self._flush()
+        if self._flush_queue is not None:
+            self._flush_queue.put(None)
+        if self._flush_thread is not None:
+            self._flush_thread.join()
+
         if self.writer is not None:
             end_ns = now_ns(self)
             metadata = {
@@ -402,6 +420,8 @@ class RecordNode(Node):
             )
         self.recording = False
         self.writer = None
+        self._flush_queue = None
+        self._flush_thread = None
         self.episode_idx += 1
 
     def _buffer_tick(self) -> None:
@@ -446,18 +466,69 @@ class RecordNode(Node):
             self.get_logger().info(f"recording episode {self.episode_idx:06d}: {self._episode_samples} samples")
 
     def _flush(self) -> None:
-        if not self._flush_step_times or self.writer is None:
+        # Spin-thread side: snapshot the current buffer and hand it to the worker thread.
+        # Should be ~milliseconds — no compression or disk I/O happens here.
+        if not self._flush_step_times or self.writer is None or self._flush_queue is None:
             return
 
-        step_times = np.asarray(self._flush_step_times, dtype=np.int64)
-        self.writer.append_steps(step_times)
-        for topic, payloads in self._flush_payloads.items():
-            stamps = np.asarray(self._flush_payload_stamps[topic], dtype=np.int64)
-            self.writer.append_topic_batch(topic, self.topic_states[topic].ros_type, stamps, payloads)
+        n = len(self._flush_step_times)
+        t_snap = time.perf_counter()
 
-        self._flush_step_times.clear()
-        self._flush_payloads.clear()
-        self._flush_payload_stamps.clear()
+        batch_step_times = self._flush_step_times
+        batch_payloads = self._flush_payloads
+        batch_payload_stamps = self._flush_payload_stamps
+        batch_types = {t: self.topic_states[t].ros_type for t in batch_payloads.keys()}
+
+        # Reset spin-thread buffers — fresh containers, the old ones now belong to the worker.
+        self._flush_step_times = []
+        self._flush_payloads = defaultdict(list)
+        self._flush_payload_stamps = defaultdict(list)
+
+        self._flush_queue.put((n, batch_step_times, batch_payloads, batch_payload_stamps, batch_types))
+
+        snap_ms = (time.perf_counter() - t_snap) * 1000.0
+        self.get_logger().debug(
+            f"[flush-snap] n={n} snap={snap_ms:.2f}ms qsize={self._flush_queue.qsize()}"
+        )
+
+    def _flush_worker(self) -> None:
+        # Worker-thread side: pop batches, do compression + disk write, log timings.
+        # Sentinel `None` ends the worker.
+        q = self._flush_queue
+        if q is None:
+            return
+        while True:
+            item = q.get()
+            if item is None:
+                return
+            n, step_times_list, payloads, stamps_dict, types = item
+
+            if self.writer is None:
+                self.get_logger().warning("flush worker: writer is None, dropping batch")
+                continue
+
+            try:
+                t_start = time.perf_counter()
+                step_times = np.asarray(step_times_list, dtype=np.int64)
+                self.writer.append_steps(step_times)
+                t_steps = time.perf_counter()
+
+                per_topic_ms: dict[str, float] = {}
+                for topic, p in payloads.items():
+                    stamps = np.asarray(stamps_dict[topic], dtype=np.int64)
+                    t0 = time.perf_counter()
+                    self.writer.append_topic_batch(topic, types[topic], stamps, p)
+                    per_topic_ms[topic] = (time.perf_counter() - t0) * 1000.0
+
+                total_ms = (time.perf_counter() - t_start) * 1000.0
+                steps_ms = (t_steps - t_start) * 1000.0
+                parts = " ".join(f"{topic_to_key(t)}={ms:.1f}ms" for t, ms in per_topic_ms.items())
+                qsize = q.qsize()
+                self.get_logger().debug(
+                    f"[flush] n={n} total={total_ms:.1f}ms steps={steps_ms:.1f}ms qsize={qsize} {parts}"
+                )
+            except Exception as e:
+                self.get_logger().error(f"flush worker exception: {e!r}")
 
     def _convert_msg(self, msg: Any) -> Any:
         if isinstance(msg, Image):
